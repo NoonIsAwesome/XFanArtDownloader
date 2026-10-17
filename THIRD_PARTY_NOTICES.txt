@@ -1,0 +1,158 @@
+X FanArt Downloader — third-party notices and licensing scope
+Updated 2026-10-18
+
+PROJECT CODE AND SEPARATE PROGRAMS
+
+The author's name and attribution are preserved:
+  沐橙 Noon / Noon Is Awesome
+  Copyright (C) 2026 Noon Is Awesome. No rights reserved.
+
+The historical words "No rights reserved" are attribution text, not a statement
+that the project, its dependencies, or its artwork is CC0 or public domain.
+
+The application's own desktop GUI and application code is released under
+GNU GPL version 3 only (SPDX: GPL-3.0-only), except for the explicitly separate
+worker and separately licensed third-party files described below.
+The complete unmodified GPL v3 text is in LICENSE and licenses/GPL-3.0.txt.
+
+The separately executed gallery-dl worker's own integration code is released
+under GNU GPL version 2 only (SPDX: GPL-2.0-only), as identified in its source.
+Its source is extractor/gallery_bridge.py; the GUI and control code is in desktop/.
+gallery-dl itself retains its original GPL-2.0-only license.
+The complete unmodified GPL v2 text is in licenses/GPL-2.0.txt.
+
+The GUI's Python runtime must not import or contain gallery_dl code, and the
+worker must not import PyQt6. They are separate programs, built as separate
+executables. Communication
+is limited to ordinary URL / Cookie-file-path inputs and general JSON Lines
+metadata, without shared Python objects, memory, or calls into the other's
+internal functions. The main application's frozen dependency graph must exclude
+gallery-dl; the worker's graph must exclude PyQt6 and Qt.
+
+The Windows single-file distribution stores the separately built, unchanged
+gallery-dl-helper.exe as data in the GUI's self-extracting archive. At runtime
+the GUI launches that executable from the temporary extraction directory as a
+child process. Its Python code is not added to the GUI's module archive or
+loaded into the GUI interpreter. One downloadable file therefore contains two
+separately executed programs; it does not create a shared Python runtime.
+The separate build recipes are packaging/gallery-dl-helper.spec and
+packaging/XFanArtDownloader.spec; root build.cmd runs them in that order.
+
+This separation is deliberate: the installed gallery-dl distribution specifies
+GPL-2.0-only, while the installed PyQt6 specifies GPL-3.0-only. gallery-dl's
+headers specify version 2 without an "or later" grant. Neither the GPL v2 text's
+example notice nor this project's GPL v3 license changes those upstream grants.
+Do not merge these runtimes into one program or describe that combination as
+automatically license-compatible. Further architectural changes require a new
+review of the applicable licenses and permissions.
+
+Packaging independent binaries together does not itself change either license.
+The intended distribution is an aggregation of separate programs, with the
+applicable notices, complete corresponding sources and build instructions for
+each. This documents the implemented boundary; it is not a blanket assurance
+that every future packaging or protocol change satisfies all license terms.
+
+FSF compatibility reference:
+https://www.gnu.org/licenses/gpl-faq.en.html#AllCompatibility
+https://www.gnu.org/licenses/license-list.en.html#GPLv2
+Separate-program / aggregation guidance:
+https://www.gnu.org/licenses/gpl-faq.en.html#MereAggregation
+
+The optional Chrome extension is a separate program with its own GPL version 2
+LICENSE, notices and source attribution in chrome-extension/. The desktop
+application's GPL version 3 grant does not relicense that directory or upstream
+GPL version 2 code.
+
+UPSTREAM COMPONENTS
+
+These summaries describe the installed versions used during development.
+Original per-distribution LICENSE / COPYING / NOTICE files remain authoritative
+and must accompany applicable binary distributions. Dependency ownership follows
+the actual frozen executable; a component's listing here does not permit moving
+it across the program boundary or replacing its original license.
+
+Independent worker:
+
+  gallery-dl 1.32.16 — GPL-2.0-only
+  Copyright Mike Fährmann and contributors.
+  https://codeberg.org/mikf/gallery-dl
+  https://github.com/mikf/gallery-dl
+  The locally installed METADATA and extractor headers were checked. They do
+  not contain a GPL-2.0-or-later grant. This application does not assert such a
+  grant or relicense gallery-dl. Preserve the complete upstream distribution's
+  notices and source obligations when redistributing a worker containing it.
+
+Desktop GUI:
+
+  PyQt6 6.10.2 — installed PyPI distribution: GPL-3.0-only
+  Copyright Riverbank Computing Limited.
+  https://www.riverbankcomputing.com/software/pyqt/intro
+  PyQt is offered under GPL v3 or a separate commercial license; it is not LGPL.
+  No commercial PyQt license is claimed by this project.
+
+  PyQt6-Qt6 6.10.1 — installed distribution metadata: LGPL v3
+  https://www.qt.io/licensing/open-source-lgpl-obligations
+  https://www.riverbankcomputing.com/software/pyqt/intro
+  Qt and any bundled third-party libraries retain their respective licenses.
+  Preserve the original Qt license material, applicable source and user rights
+  when distributing Qt binaries. The PyQt license does not replace Qt's license.
+
+  PyQt6-sip 13.10.3 — BSD-2-Clause
+  https://github.com/Python-SIP/sip
+
+Other runtime dependencies, retained with the executable(s) that actually use them:
+
+  Pillow 12.3.0 — MIT-CMU
+  https://github.com/python-pillow/Pillow
+  Its LICENSE also contains notices for bundled image libraries.
+
+  websocket-client 1.9.2 — Apache-2.0
+  https://github.com/websocket-client/websocket-client
+
+  Requests 2.34.2 — Apache-2.0
+  https://github.com/psf/requests
+  Preserve both LICENSE and NOTICE.
+
+  certifi 2026.7.22 — MPL-2.0
+  https://github.com/certifi/python-certifi
+
+  charset-normalizer 3.5.2 — MIT
+  https://github.com/jawah/charset_normalizer
+
+  idna 3.20 — BSD-3-Clause
+  https://github.com/kjd/idna
+
+  urllib3 2.8.0 — MIT
+  https://github.com/urllib3/urllib3
+
+Build tools and interpreter:
+
+  PyInstaller 6.22.3 — GPLv2-or-later with the PyInstaller special exception
+  https://github.com/pyinstaller/pyinstaller
+  Preserve COPYING.txt, including its exception. PyInstaller's license and
+  exception do not relicense an application's bundled dependencies.
+
+  Python — Python Software Foundation License and notices for included components
+  https://www.python.org/
+  Preserve the complete interpreter distribution's LICENSE.txt with frozen
+  distributions that include Python.
+
+APPLICATION ASSETS AND DOWNLOADED MEDIA
+
+assets/author.png, assets/icon.ico, names, logos and other artwork do not receive
+a new copyright grant merely because source code is
+published. Their complete third-party provenance and redistribution permission
+have not been independently established here. Do not describe them as CC0,
+public domain, or GPL-covered solely on the basis of this project's text.
+Before a public asset distribution, obtain the appropriate permission or replace
+unverified assets with clearly licensed alternatives and preserve their notices.
+
+Images and videos downloaded from X remain the property of their respective
+rightsholders. The application's software license grants no rights to reuse,
+commercialize or redistribute those media. Google, Chrome, Microsoft, Edge,
+X and Twitter names and marks belong to their respective rightsholders; this
+project is not their official product or an assertion of endorsement.
+
+Chrome and Edge are separately installed browsers. They are not supplied or
+relicensed by this project. Selenium, ChromeDriver, youtube-dl and yt-dlp are not
+required by the current login/download path.

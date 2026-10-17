@@ -1,0 +1,6 @@
+# Runtime dependencies tested with 64-bit Python 3.12 on Windows.
+PyQt6==6.10.2
+PyQt6-Qt6==6.10.1
+Pillow==12.3.0
+websocket-client==1.9.2
+requests==2.34.2

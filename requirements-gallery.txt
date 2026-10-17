@@ -1,0 +1,2 @@
+# Independent GPL-2.0-only extractor process. Never import it into the GUI.
+gallery-dl==1.32.16

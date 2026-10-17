@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "FanArt Downloader",
+  "version": "3.0.1",
+  "description": "依完整 Hashtag 收集 X FanArt：多標籤、作者媒體頁補抓、貼網址下載與本機去重紀錄。",
+  "minimum_chrome_version": "120",
+  "permissions": ["alarms", "cookies", "downloads", "storage"],
+  "host_permissions": [
+    "https://x.com/*",
+    "https://abs.twimg.com/*",
+    "https://pbs.twimg.com/*",
+    "https://video.twimg.com/*"
+  ],
+  "background": {"service_worker": "worker.js", "type": "module"},
+  "action": {
+    "default_title": "開啟 FanArt Downloader",
+    "default_icon": {"16": "assets/icon16.png", "32": "assets/icon32.png", "48": "assets/icon48.png", "128": "assets/icon128.png"}
+  },
+  "icons": {"16": "assets/icon16.png", "32": "assets/icon32.png", "48": "assets/icon48.png", "128": "assets/icon128.png"},
+  "content_security_policy": {"extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'"}
+}

@@ -1,0 +1,112 @@
+# Runtime state, credentials, and downloaded user content.
+/data/
+/downloads/
+/settings.json
+/settings.local.json
+**/browser-profile/
+**/browser-profiles/
+*cookies*.txt
+*cookies*.json
+*Cookies*.txt
+*Cookies*.json
+*cookie*.txt
+*cookie*.json
+*Cookie*.txt
+*Cookie*.json
+.cookies-*.tmp
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.sqlite-journal
+
+# Actual browser state must never enter the repository.
+**/DevToolsActivePort
+**/Local State
+**/Cookies
+**/Cookies-journal
+**/Login Data
+**/Login Data-journal
+**/Web Data
+**/Web Data-journal
+**/SingletonCookie
+**/SingletonLock
+**/SingletonSocket
+
+# Generated QA output and temporary browser profiles (keep helper source files).
+/.qa/
+/qa-output/
+/qa-tmp/
+/qa-*/
+/qa_*/
+/smoke-output/
+/smoke-*/
+/smoke_*/
+/tmp/
+/temp/
+/tests/tmp*/
+/tests/.tmp*/
+/tests/.generated/
+/tests/.runtime/
+**/qa-profile*/
+**/smoke-profile*/
+**/fixture-profile*/
+**/test-profile*/
+
+# Python and build output.
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+/build/
+/build-*/
+/build-config*
+/dist/
+*.egg-info/
+
+# Optional extension development dependencies and reports.
+node_modules/
+playwright-report/
+test-results/
+
+# Local configuration, private keys, and editor/OS noise.
+.env
+.env.*
+!.env.example
+*.local
+*.pem
+*.key
+*.p12
+*.pfx
+*.har
+*.har.json
+*.netlog.json
+/secrets/
+/credentials/
+/logs/
+*.log
+.vscode/settings.json
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local development context and generated integration evidence.
+/qa/
+/.qa-profile/
+/.browsers/
+/.npm-cache/
+/.impeccable/
+/.codex/
+/public-source/
+/app-login-fix/

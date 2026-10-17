@@ -1,0 +1,12 @@
+# Keep code reviews consistent across Windows and other development systems.
+* text=auto
+*.py text eol=lf
+*.spec text eol=lf
+*.md text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.cmd text eol=crlf
+*.png binary
+*.ico binary

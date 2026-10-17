@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-Hant" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>FanArt Downloader</title>
+  <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" type="module"></script>
+</head>
+<body>
+  <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.4A8.7 8.7 0 0 1 9.6 4 8.8 8.8 0 1 0 20 14.4Z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4m0-14.2-1.4 1.4M6.3 17.7l-1.4 1.4"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></symbol>
+    <symbol id="i-login" viewBox="0 0 24 24"><path d="M13 4h7v16h-7M3 12h12m-4-4 4 4-4 4"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.2"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M5.1 7a8 8 0 0 1 13-1L20 9M4 15l1.9 3a8 8 0 0 0 13-1"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4m-4 4 4-4 4 4M4 16v5h16v-5"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6h6l3 3h9v11H3Z"/><path d="M3 10h18"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 11a9 9 0 1 1 2 7M3 4v7h7m2-4v6l4 2"/></symbol>
+    <symbol id="i-tray" viewBox="0 0 24 24"><path d="m4 11 4-7h8l4 7v8H4Zm0 1h5l1.5 2.5h3L15 12h5"/></symbol>
+    <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v5m10-5v5M3 11h18m-14 4h2m4 0h2m-8 3h2"/></symbol>
+    <symbol id="i-left" viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></symbol>
+    <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14m8-14v14"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 4 12 8-12 8Z"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 5 5L20 7"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 3h7v7m0-7L11 13M10 5H4v15h15v-6"/></symbol>
+  </svg>
+  <div class="app-shell">
+    <header class="app-header">
+      <div class="brand"><img src="assets/logo.svg" width="48" height="48" alt=""><div><h1>FanArt Downloader</h1><p>收集帶有指定標籤的作品</p></div></div>
+      <div class="header-tools">
+        <div class="utility-actions">
+          <button id="themeToggle" class="button quiet" type="button" aria-label="切換為深色模式"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-moon"/></svg><span>深色模式</span></button>
+          <button id="aboutBtn" class="button quiet" type="button"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-user"/></svg>作者資訊</button>
+          <button id="noticeBtn" class="button quiet" type="button">使用提醒</button>
+        </div>
+        <div class="login-actions"><button id="checkSessionBtn" class="button secondary compact" type="button"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-refresh"/></svg>檢查登入</button><button id="loginBtn" class="button primary compact" type="button"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-login"/></svg>在 X 登入</button></div>
+      </div>
+    </header>
+    <div class="connection-line"><p id="sessionMessage">沿用目前 Chrome 的 X 登入狀態，帳密只在 X／Google 網站輸入。</p><span id="sessionState" role="status">尚未檢查登入</span></div>
+    <div id="previewBanner" class="inline-message" hidden>介面預覽，無法執行下載。請在 Chrome 載入擴充功能後開啟。</div>
+    <div id="actionMessage" class="inline-message" role="status" aria-live="polite" hidden></div>
+    <main class="workspace">
+      <section class="collection-panel" aria-labelledby="collectionTitle">
+        <h2 id="collectionTitle">收集 FanArt</h2>
+        <form id="collectionForm" aria-labelledby="collectionTitle" novalidate>
+          <fieldset id="sourceFields" class="plain-fieldset" aria-label="收集來源">
+            <div class="field-group target-group"><label class="field-label" for="tagsText">目標標籤</label><input id="tagsText" name="tagsText" type="text" value="" spellcheck="false" autocomplete="off" placeholder="#角色名稱 #作品標籤，或以逗號分隔" aria-describedby="tagHelp"><p id="tagHelp" class="helper">以空格或逗號分隔。符合任一完整標籤即收集，重複標籤會合併。</p></div>
+            <div class="search-source"><label class="check source-check"><input id="searchEnabled" type="checkbox" checked><span>標籤搜尋</span></label><p class="helper">搜尋含指定標籤的貼文。</p></div>
+            <section class="author-source" aria-label="作者媒體補抓">
+              <label class="check source-check"><input id="authorMediaEnabled" type="checkbox" aria-controls="authorsText discoverAuthors" checked><span>作者媒體補抓</span></label>
+              <div class="automatic-authors"><label class="check"><input id="discoverAuthors" type="checkbox" checked><span>自動補抓已發現的作者</span></label><p class="helper">包含歷史紀錄與本次搜尋找到的作者，可以不填帳號。</p></div>
+              <div class="field-group"><label class="field-label" for="authorsText">手動新增作者 <span class="optional">（選填）</span></label><p class="helper">搜尋沒找到的作者可在這裡補上；每行一位，不需要數字 ID。</p><textarea id="authorsText" rows="2" spellcheck="false" placeholder="@作者帳號&#10;或 https://x.com/作者/media"></textarea></div>
+            </section>
+            <div class="field-group"><label class="field-label" for="urlsText">貼文網址 <span class="optional">（選填）</span></label><textarea id="urlsText" rows="2" spellcheck="false" placeholder="https://x.com/作者/status/貼文編號&#10;每行一則貼文網址"></textarea><p class="helper">加入已找到的貼文，仍會核對完整標籤。</p></div>
+            <div class="strict-note"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-info"/></svg><p>所有來源都只下載含指定完整標籤的貼文；作者其他作品會略過。</p></div>
+          </fieldset>
+        </form>
+      </section>
+      <aside class="collection-sidebar" aria-labelledby="summaryTitle">
+        <div class="summary-scroll">
+          <section class="run-summary"><h2 id="summaryTitle">本次收集</h2><div id="tagSummary" class="tag-list" aria-label="目標標籤"></div><p id="runState" class="run-state" role="status">尚未開始</p><p id="resultDetail" class="helper">開始後會在下方顯示下載進度。</p><p id="sourceSummary" class="helper">標籤搜尋、作者媒體補抓</p><dl id="stats" class="stats" hidden></dl></section>
+          <section class="destination-section"><h3>下載位置</h3><label class="helper" for="downloadSubdir">Chrome 下載資料夾內的子資料夾</label><div class="destination-control"><input id="downloadSubdir" type="text" value="FanArtDownloader" spellcheck="false" aria-describedby="destinationHelp"><button id="openDownloadsBtn" class="icon-button" type="button" title="開啟 Chrome 下載紀錄" aria-label="開啟 Chrome 下載紀錄"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-folder"/></svg></button></div><p id="destinationHelp" class="helper">例如 FanArt/sampleart；實際位置依 Chrome 的下載設定。</p></section>
+          <section class="log-section"><div class="section-heading"><h3>下載紀錄</h3><button id="historyBtn" class="text-button" type="button"><svg class="icon small" aria-hidden="true" focusable="false"><use href="#i-history"/></svg>查看紀錄</button></div><div id="logBox" class="log-box" tabindex="0" aria-label="執行紀錄"><div id="logEmpty" class="log-empty"><svg class="empty-icon" aria-hidden="true" focusable="false"><use href="#i-tray"/></svg><p>開始後，會在這裡顯示執行結果。</p></div><ol id="logList" class="log-list" aria-live="polite" aria-relevant="additions"></ol></div><details id="sourceErrors" class="source-errors" hidden><summary>部分來源未完成</summary><ul id="sourceErrorList"></ul></details></section>
+        </div>
+        <details id="advancedSettings" class="advanced"><summary>進階設定</summary><fieldset id="advancedFields" class="plain-fieldset advanced-content" aria-label="進階收集設定"><label class="check"><input id="folderByUser" type="checkbox" checked><span>為每位作者建立獨立資料夾</span></label><div class="advanced-row"><label class="check"><input id="limitCountEnabled" type="checkbox" aria-controls="limitCount"><span>限制本輪處理貼文數</span></label><input id="limitCount" class="count-input" type="number" value="100" min="1" max="1000000" step="1" inputmode="numeric" aria-label="本輪處理貼文數上限" disabled></div><p class="helper inset-help">包含已下載且略過的貼文。</p><div class="advanced-row date-row"><label class="check"><input id="sinceEnabled" type="checkbox" aria-controls="since calendarBtn"><span>只處理此日期起的貼文</span></label><div class="date-control"><input id="since" type="text" inputmode="numeric" maxlength="10" placeholder="yyyy-MM-dd" aria-label="貼文起始日期" disabled><button id="calendarBtn" class="icon-button" type="button" aria-label="選擇起始日期" disabled><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-calendar"/></svg></button></div></div><label class="check"><input id="delay" type="checkbox" checked><span>下載間隨機休息（假裝自己不是機器人）</span></label><label class="check"><input id="retryFailed" type="checkbox" checked><span>重試先前未完成的下載</span></label></fieldset></details>
+        <div class="collection-actions"><button id="startBtn" class="button primary start-button" type="submit" form="collectionForm"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-download"/></svg>開始收集</button><div class="run-actions"><button id="pauseBtn" class="button secondary" type="button" disabled><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-pause"/></svg>暫停</button><button id="resumeBtn" class="button secondary" type="button" hidden><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-play"/></svg>繼續收集</button><button id="stopBtn" class="button secondary" type="button" disabled><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stop"/></svg>停止</button></div></div>
+      </aside>
+    </main>
+    <footer class="app-footer"><a href="https://noonisawesome.dev/" target="_blank" rel="noopener noreferrer">試試超讚的歌回直播軟體</a><span>收集期間，Chrome 本身還是要開著。</span><span>圖片與影片著作權屬原作者所有。</span></footer>
+  </div>
+
+  <dialog id="noticeDialog" class="app-dialog notice-dialog" aria-labelledby="noticeTitle"><div class="dialog-content"><div class="dialog-header"><div class="dialog-title"><span class="notice-mark"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-info"/></svg></span><h2 id="noticeTitle">使用者注意事項</h2></div><button class="icon-button" type="button" data-close-dialog="noticeDialog" aria-label="關閉使用者提醒"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-close"/></svg></button></div><p>本工具僅供<strong>個人非商業用途</strong>使用。<br>下載的所有圖片與影片著作權均屬原作者所有。</p><div class="notice-restrictions"><h3>請勿：</h3><ul><li>任意將圖片用於商業用途</li><li>未經授權轉載、打包公開分享</li><li>濫用導致 X 平台封鎖</li></ul></div><p class="helper">若大量使用造成帳號異常或封鎖，使用者需自行承擔責任。</p><div class="dialog-footer"><button class="button primary" type="button" data-close-dialog="noticeDialog" autofocus>我知道了</button></div></div></dialog>
+  <dialog id="aboutDialog" class="app-dialog about-dialog" aria-labelledby="aboutTitle"><div class="dialog-content"><div class="dialog-header author-heading"><img src="assets/author.png" alt="沐橙 Noon" width="80" height="80"><div><h2 id="aboutTitle">沐橙 Noon</h2><p class="helper">Good afterNoon！我是沐橙！</p></div><button class="icon-button" type="button" data-close-dialog="aboutDialog" aria-label="關閉作者資訊"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-close"/></svg></button></div><div class="about-body"><p>我曾經是一個 NPC，長期與路過的旅人對話讓我獲得了自我意識。<br>平常喜歡唱歌、彈吉他和玩遊戲，主要在 YouTube 上直播活動，歡迎你來找我玩！</p><p><strong>「這位勇者，你願意接下我的任務嗎？」</strong></p><section><h3>社群連結</h3><div class="author-links"><a href="https://noonisawesome.dev/" target="_blank" rel="noopener noreferrer">官方網站 · noonisawesome.dev</a><a href="https://www.youtube.com/@NoonVtuber" target="_blank" rel="noopener noreferrer">YouTube · @NoonVtuber</a><a href="https://twitter.com/NoonVtuber" target="_blank" rel="noopener noreferrer">X / Twitter · @NoonVtuber</a><a href="https://www.twitch.tv/NoonVtuber" target="_blank" rel="noopener noreferrer">Twitch · NoonVtuber</a><a href="https://www.threads.com/@noonvtuber" target="_blank" rel="noopener noreferrer">Threads · @noonvtuber</a><a href="https://www.instagram.com/noonvtuber" target="_blank" rel="noopener noreferrer">Instagram · @noonvtuber</a></div></section><section><h3>支持我</h3><div class="author-links"><a href="https://p.ecpay.com.tw/3604623" target="_blank" rel="noopener noreferrer">綠界 ECPay</a><a href="https://streamlabs.com/noon_0606/tip" target="_blank" rel="noopener noreferrer">PayPal</a></div></section><section><h3>合作聯絡</h3><a href="https://reurl.cc/1k0W9Q" target="_blank" rel="noopener noreferrer">請填寫合作聯絡表單</a></section></div><p class="credit">Copyright © 2026 Noon Is Awesome. No rights reserved.</p><div class="dialog-footer"><button class="button primary" type="button" data-close-dialog="aboutDialog">關閉</button></div></div></dialog>
+  <dialog id="historyDialog" class="app-dialog history-dialog" aria-labelledby="historyTitle"><div class="dialog-content"><div class="dialog-header"><h2 id="historyTitle">下載紀錄</h2><button class="icon-button" type="button" data-close-dialog="historyDialog" aria-label="關閉下載紀錄"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-close"/></svg></button></div><div class="history-tools"><label class="visually-hidden" for="historySearch">搜尋最近紀錄</label><input id="historySearch" type="search" placeholder="搜尋作者、貼文編號或檔名"><button id="exportHistoryBtn" class="button secondary compact" type="button"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-download"/></svg>匯出紀錄</button><button id="importHistoryBtn" class="button secondary compact" type="button"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-upload"/></svg>匯入紀錄</button><input id="historyFile" type="file" accept="application/json,.json" hidden></div><p id="historyCaption" class="helper">顯示最近的實際紀錄；匯出檔案包含完整可備份紀錄。</p><div class="history-table-wrap"><table><thead><tr><th scope="col">貼文／作者</th><th scope="col">狀態</th><th scope="col">檔案／原因</th></tr></thead><tbody id="historyRows"></tbody></table><p id="historyEmpty" class="history-empty">尚無下載紀錄。開始收集後，結果會保存在這裡。</p></div><p id="historyMessage" class="helper" role="status"></p><div class="dialog-footer"><button class="button secondary" type="button" data-close-dialog="historyDialog">關閉</button></div></div></dialog>
+  <dialog id="calendarDialog" class="app-dialog calendar-dialog" aria-labelledby="calendarTitle"><div class="dialog-content"><h2 id="calendarTitle" class="visually-hidden">選擇起始日期</h2><div class="calendar-heading"><button id="previousMonth" class="icon-button" type="button" aria-label="上一個月"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-left"/></svg></button><div class="calendar-selectors"><label class="visually-hidden" for="calendarYear">年份</label><input id="calendarYear" type="number" min="1752" max="9999" inputmode="numeric" aria-label="年份"><label class="visually-hidden" for="calendarMonth">月份</label><select id="calendarMonth" aria-label="月份"><option value="0">1 月</option><option value="1">2 月</option><option value="2">3 月</option><option value="3">4 月</option><option value="4">5 月</option><option value="5">6 月</option><option value="6">7 月</option><option value="7">8 月</option><option value="8">9 月</option><option value="9">10 月</option><option value="10">11 月</option><option value="11">12 月</option></select></div><button id="nextMonth" class="icon-button" type="button" aria-label="下一個月"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-right"/></svg></button></div><div class="calendar-weekdays" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div><div id="calendarDays" class="calendar-days" role="group" aria-label="日期"></div><div class="calendar-footer"><button id="calendarToday" class="button secondary compact" type="button">今天</button><button class="button secondary compact" type="button" data-close-dialog="calendarDialog">關閉</button></div></div></dialog>
+</body>
+</html>
