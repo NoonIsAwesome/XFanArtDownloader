@@ -13,9 +13,15 @@ if sys.platform == "win32":
     os.environ["PATH"] = os.pathsep.join((str(Path(sys.executable).parent), str(windows / "System32"), str(windows)))
 RUNTIME_DISTRIBUTIONS = (
     "PyQt6", "PyQt6-Qt6", "PyQt6-sip", "Pillow",
-    "websocket-client", "requests", "certifi", "charset-normalizer", "idna", "urllib3",
+    "websocket-client", "requests", "certifi", "charset-normalizer", "idna", "urllib3", "PySocks",
 )
 datas = [(str(ROOT / "assets" / name), ".") for name in ("icon.ico", "author.png")]
+datas.append((str(ROOT / 'desktop' / 'locales'), 'locales'))
+datas += collect_data_files('PyQt6', includes=[
+    'Qt6/translations/qtbase_en.qm', 'Qt6/translations/qtbase_zh_TW.qm',
+    'Qt6/translations/qtbase_zh_CN.qm', 'Qt6/translations/qtbase_ja.qm',
+    'Qt6/translations/qtbase_ko.qm',
+])
 # Keep the GPL v2 extractor as an unchanged, separate executable inside this
 # self-extracting distribution. It never becomes a GUI Python module.
 helper = ROOT / "dist" / "gallery-dl-helper.exe"
@@ -40,7 +46,7 @@ a = Analysis(
     binaries=[],
     datas=datas,
     hiddenimports=[
-        "requests.certs", "certifi", "websocket",
+        "requests.certs", "certifi", "websocket", "socks", "urllib3.contrib.socks",
         "PIL.JpegImagePlugin", "PIL.PngImagePlugin", "PIL.GifImagePlugin",
         "PIL.WebPImagePlugin", "PIL.BmpImagePlugin", "PIL.TiffImagePlugin",
         "PIL.IcoImagePlugin", "PIL.AvifImagePlugin",

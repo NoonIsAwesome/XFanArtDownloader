@@ -18,9 +18,10 @@ import sys
 import threading
 import time
 from urllib.parse import parse_qs, urlsplit
+from network import validate_proxy_url
 
 MAX_LINE_BYTES = 1024 * 1024
-IDLE_TIMEOUT = 120.0
+IDLE_TIMEOUT = 240.0  # Includes the helper's bounded retries on a slow network.
 QUEUE_SIZE = 32
 _SECRET = re.compile(r"cookie|header|authorization|password|passwd|secret|token|csrf|session|credential", re.I)
 _EXTRACTORS = {"TwitterSearchExtractor", "TwitterMediaExtractor", "TwitterTweetExtractor"}
@@ -42,6 +43,13 @@ def _source_url(value: str) -> str:
             raise ValueError()
     except (TypeError, ValueError):
         raise ValueError("僅接受 HTTPS 的 X 搜尋、作者媒體頁或貼文網址。") from None
+    return value
+
+
+def _thread_url(value: str) -> str:
+    _source_url(value)
+    if not re.fullmatch(r"/(?:[A-Za-z0-9_]{1,15}/status|i/(?:web/)?status)/\d+/?", urlsplit(value).path):
+        raise ValueError("僅接受 HTTPS 的 X 貼文網址來擷取討論串。")
     return value
 
 
@@ -129,10 +137,11 @@ class _WindowsProcessJob:
 
 
 class GallerySource:
-    def __init__(self, cookie_file: Path | None, log, stop_event: threading.Event):
+    def __init__(self, cookie_file: Path | None, log, stop_event: threading.Event, *, proxy_url: str | None = None):
         self.cookie_file = Path(cookie_file) if cookie_file is not None else None
         self.log = log
         self.stop_event = stop_event
+        self.proxy_url = validate_proxy_url(proxy_url) if proxy_url is not None else None
 
     @staticmethod
     def _command():
@@ -174,17 +183,21 @@ class GallerySource:
         finally:
             push(("eof", None))
 
-    def _records(self, url=None, *, smoke=False):
+    def _records(self, url=None, *, smoke=False, conversation=False):
         if self.stop_event.is_set():
             raise Cancelled()
         args = self._command()
         if smoke:
             args += ["--smoke-test"]
         else:
-            args += ["--url", _source_url(url)]
+            args += ["--url", (_thread_url if conversation else _source_url)(url)]
             if self.cookie_file is None:
                 raise RuntimeError("尚未儲存本機登入資料，請先登入並儲存。")
             args += ["--cookies", str(self.cookie_file.resolve())]
+            if self.proxy_url is not None:
+                args += ['--proxy', self.proxy_url]
+            if conversation:
+                args += ['--conversation']
         environment = os.environ.copy()
         environment.update({"PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1", "PYINSTALLER_RESET_ENVIRONMENT": "1"})
         process = None
@@ -236,6 +249,11 @@ class GallerySource:
                         raise RuntimeError("擷取工具回傳未允許的媒體來源或私密欄位。")
                     count += 1
                     yield record
+                elif record_type == "post":
+                    if not conversation or not isinstance(record.get("metadata"), dict) or not _public_metadata(record["metadata"]):
+                        raise RuntimeError("擷取工具回傳未允許的貼文資料或私密欄位。")
+                    count += 1
+                    yield record
                 elif record_type == "done":
                     if record.get("ok") is not True or type(record.get("count")) is not int or record["count"] != count:
                         raise RuntimeError("擷取工具未完整完成；請查看來源紀錄後重試。")
@@ -281,6 +299,13 @@ class GallerySource:
     def iter_media(self, url: str):
         for record in self._records(url):
             if record["type"] == "metadata":
+                yield record["url"], record["metadata"]
+
+    def iter_thread(self, url: str):
+        for record in self._records(url, conversation=True):
+            if record["type"] == "post":
+                yield None, record["metadata"]
+            elif record["type"] == "metadata":
                 yield record["url"], record["metadata"]
 
     @classmethod

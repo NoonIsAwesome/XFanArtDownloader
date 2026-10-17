@@ -11,20 +11,73 @@ from __future__ import annotations
 
 import re
 
-from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QUrl
+from PyQt6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QUrl
 from PyQt6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from PyQt6.QtWidgets import (
-    QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QProxyStyle, QPushButton,
-    QScrollArea, QSizePolicy, QStyle, QToolButton, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QProxyStyle, QPushButton,
+    QScrollArea, QSizePolicy, QStyle, QStyleOptionButton, QToolButton, QVBoxLayout, QWidget,
 )
 
 
-from ui_theme import apply_dialog_theme, apply_palette, gallery_stylesheet, theme_colors
+from ui_theme import apply_dialog_theme, apply_palette, gallery_stylesheet, theme_colors, ui_font
+from i18n import tr, language_mode
 
 
 TEAL = "#176C68"
 INK = "#202A30"
 MUTED = "#586971"
+
+
+class WrappingCheckBox(QCheckBox):
+    """Preserve native checkbox behavior while letting long translations wrap."""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        flags = int(Qt.TextFlag.TextWordWrap | Qt.TextFlag.TextShowMnemonic)
+        bounds = self.fontMetrics().boundingRect(QRect(0, 0, max(24, width - 29), 10000), flags, self.text())
+        return max(22, bounds.height() + 4)
+
+    def sizeHint(self):
+        return QSize(280, self.heightForWidth(280))
+
+    def minimumSizeHint(self):
+        return QSize(80, 22)
+
+    def hitButton(self, point):
+        return self.rect().contains(point)
+
+    def paintEvent(self, event):
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        option.text = ""
+        painter = QPainter(self)
+        self.style().drawControl(QStyle.ControlElement.CE_CheckBox, option, painter, self)
+        group = QPalette.ColorGroup.Active if self.isEnabled() else QPalette.ColorGroup.Disabled
+        painter.setPen(self.palette().color(group, QPalette.ColorRole.WindowText))
+        flags = int(Qt.AlignmentFlag.AlignVCenter) | int(Qt.TextFlag.TextWordWrap | Qt.TextFlag.TextShowMnemonic)
+        painter.drawText(self.rect().adjusted(29, 0, 0, 0), flags, self.text())
+        painter.end()
+
+
+class HeaderHelpLabel(QLabel):
+    """Measure capped header copy at its real width, including live translations."""
+
+    def heightForWidth(self, width):
+        # QVBoxLayout can ask about the wider login-button row. The label is
+        # capped independently, so measuring that row width loses wrapped lines.
+        return super().heightForWidth(max(1, min(width, self.maximumWidth())))
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        return QSize(hint.width(), max(hint.height(), self.heightForWidth(self.width())))
 
 
 class GalleryControlStyle(QProxyStyle):
@@ -164,8 +217,8 @@ def line_icon(name: str, size: int = 20, color: str = TEAL) -> QIcon:
     return QIcon(pixmap)
 
 
-def _label(text: str, role: str = "body", *, wrap: bool = False) -> QLabel:
-    widget = QLabel(text)
+def _label(text: str, role: str = "body", *, wrap: bool = False, label_type=QLabel) -> QLabel:
+    widget = label_type(tr(text))
     widget.setProperty("role", role)
     widget.setWordWrap(wrap)
     widget.setTextFormat(Qt.TextFormat.PlainText)
@@ -184,12 +237,14 @@ def apply_gallery_theme(window, mode=None):
     mode = mode if mode in ("light", "dark") else getattr(window, "theme_mode", "light")
     window.theme_mode = mode
     colors = theme_colors(mode)
-    font = QFont()
-    font.setFamilies(["Microsoft JhengHei UI", "Segoe UI"])
-    font.setPointSizeF(10)
-    window.setFont(font)
+    window.setFont(ui_font())
     window.setObjectName("galleryWindow")
     apply_palette(window, mode)
+    # Standard Qt dialogs are separate windows. Give them this App's palette
+    # too, so an OS dark theme cannot mix with our light text stylesheet.
+    app = QApplication.instance()
+    if app is not None:
+        app.setPalette(window.palette())
     window.setStyleSheet(gallery_stylesheet(mode))
     if hasattr(window, "_gallery_control_style"):
         window._gallery_control_style.colors = colors
@@ -219,15 +274,15 @@ def apply_gallery_theme(window, mode=None):
     if hasattr(window, "limit_date_input") and hasattr(window.limit_date_input, "set_theme"):
         window.limit_date_input.set_theme(mode)
     if hasattr(window, "theme_btn"):
-        target = "淺色" if mode == "dark" else "深色"
-        window.theme_btn.setText(target + "模式")
-        window.theme_btn.setAccessibleName("切換為" + target + "模式")
-        window.theme_btn.setToolTip("目前為" + ("深色" if mode == "dark" else "淺色") + "模式；按一下切換並記住選擇。")
+        window.theme_btn.setText(tr("淺色模式") if mode == "dark" else tr("深色模式"))
+        window.theme_btn.setAccessibleName(tr("切換為淺色模式") if mode == "dark" else tr("切換為深色模式"))
+        window.theme_btn.setToolTip(tr("目前為深色模式；按一下切換並記住選擇。") if mode == "dark"
+                                   else tr("目前為淺色模式；按一下切換並記住選擇。"))
         window.theme_btn.setIcon(line_icon("sun" if mode == "dark" else "moon", color=colors["accent"]))
     if hasattr(window, "promotion_link"):
         window.promotion_link.setText(
             '<a href="https://noonisawesome.dev/" style="color:' + colors["accent"] + '">'
-            '試試超讚的歌回直播軟體</a>'
+            + tr('試試超讚的歌回直播軟體') + '</a>'
         )
 
 
@@ -248,18 +303,20 @@ def refresh_gallery_summary(window):
     if tags:
         window.tag_summary_label.setText("  ".join("#" + tag.lstrip("#") for tag in tags))
     else:
-        window.tag_summary_label.setText("請檢查標籤" if text else "尚未填寫標籤")
+        window.tag_summary_label.setText(tr('請檢查標籤') if text else tr('尚未填寫標籤'))
     window.tag_summary_label.setToolTip(window.tag_summary_label.text())
     sources = []
     if window.search_checkbox.isChecked():
-        sources.append("標籤搜尋")
+        sources.append(tr('標籤搜尋'))
     if window.author_media_checkbox.isChecked():
-        sources.append("作者媒體補抓")
+        sources.append(tr('作者媒體補抓'))
     if window.tweet_urls_input.toPlainText().strip():
-        sources.append("貼文網址")
+        sources.append(tr('貼文網址'))
     if not sources and window.retry_failed_checkbox.isChecked():
-        sources.append("重試未完成")
-    window.source_summary_label.setText("、".join(sources) if sources else "請選擇收集來源")
+        sources.append(tr('重試未完成'))
+    if sources and window.reply_media_checkbox.isChecked():
+        sources.append(tr("同串原作者留言"))
+    window.source_summary_label.setText("、".join(sources) if sources else tr('請選擇收集來源'))
     window.path_label.setText(str(window.download_path))
     window.path_label.setToolTip(str(window.download_path))
 
@@ -285,31 +342,47 @@ def build_gallery_layout(window):
     header.addWidget(brand_mark)
     brand = QVBoxLayout()
     brand.setSpacing(3)
+    brand.addStretch(1)
     brand.addWidget(_label("FanArt Downloader", "brand"))
     brand.addWidget(_label("收集帶有指定標籤的作品", "muted"))
+    brand.addStretch(1)
     header.addLayout(brand)
     header.addStretch(1)
     auth = QVBoxLayout()
     auth.setSpacing(6)
     auth_buttons = QHBoxLayout()
     auth_buttons.setSpacing(9)
-    window.cookie_btn.setText("開啟瀏覽器登入")
+    window.cookie_btn.setText(tr('開啟瀏覽器登入'))
     window.cookie_btn.setIcon(line_icon("login", color="#FFFFFF"))
     window.cookie_btn.setProperty("variant", "primary")
-    window.cookie_save_btn.setText("儲存登入狀態")
+    window.cookie_save_btn.setText(tr('儲存登入狀態'))
     window.cookie_save_btn.setIcon(line_icon("save"))
-    window.cookie_btn.setToolTip("以一般 Chrome／Edge 模式開啟本工具專用視窗；請在網站中輸入帳號與密碼。")
-    window.cookie_save_btn.setToolTip("先關閉專用登入視窗，再讀取同一個本機 profile 的 X 登入狀態。重新開啟 App 後也能直接儲存。")
-    window.cookie_import_btn.setText("匯入 Cookie 檔")
+    window.cookie_btn.setToolTip(tr('以一般 Chrome／Edge 模式開啟本工具專用視窗；請在網站中輸入帳號與密碼。'))
+    window.cookie_save_btn.setToolTip(tr('先關閉專用登入視窗，再讀取同一個本機 profile 的 X 登入狀態。重新開啟 App 後也能直接儲存。'))
+    window.cookie_import_btn.setText(tr('匯入 Cookie 檔'))
     window.cookie_import_btn.setIcon(line_icon("folder"))
-    window.cookie_import_btn.setToolTip("選擇 Netscape Cookie TXT 或舊版 cookies.json；與登入後儲存是不同操作。")
-    window.theme_btn = QPushButton("深色模式")
-    window.about_btn = QPushButton("作者資訊")
-    window.help_btn = QPushButton("使用說明")
-    window.help_btn.setAccessibleName("開啟使用說明與登入引導")
+    window.cookie_import_btn.setToolTip(tr('選擇 Netscape Cookie TXT 或舊版 cookies.json；與登入後儲存是不同操作。'))
+    window.theme_btn = QPushButton(tr('深色模式'))
+    window.about_btn = QPushButton(tr('作者資訊'))
+    window.help_btn = QPushButton(tr('使用說明'))
+    window.help_btn.setAccessibleName(tr('開啟使用說明與登入引導'))
     utilities = QHBoxLayout()
     utilities.setSpacing(9)
     utilities.addStretch(1)
+    window.language_combo = QComboBox()
+    window.language_combo.setObjectName("languageCombo")
+    window.language_combo.setProperty("i18nSkip", True)
+    window.language_combo.setMinimumWidth(156)
+    window.language_combo.setMaximumWidth(200)
+    window.language_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+    for title, code in ((tr("跟隨電腦設定"), "system"), ("繁體中文", "zh_TW"), ("简体中文", "zh_CN"),
+                        ("English", "en"), ("日本語", "ja"), ("한국어", "ko")):
+        window.language_combo.addItem(title, code)
+    window.language_combo.setCurrentIndex(max(0, window.language_combo.findData(language_mode())))
+    window.language_combo.setAccessibleName(tr("介面語言"))
+    window.language_combo.setToolTip(tr("選擇介面語言；系統選項會跟隨電腦設定。"))
+    window.language_combo.setStyle(window._gallery_control_style)
+    utilities.addWidget(window.language_combo)
     utilities.addWidget(window.theme_btn)
     utilities.addWidget(window.help_btn)
     utilities.addWidget(window.about_btn)
@@ -321,14 +394,19 @@ def build_gallery_layout(window):
     window.login_state_label = _label("尚未儲存登入資料", "muted")
     window.login_state_label.setAlignment(Qt.AlignmentFlag.AlignRight)
     window.login_state_label.setWordWrap(True)
-    window.login_state_label.setToolTip("本機已儲存 Cookie 不代表已驗證 X 伺服器登入是否仍有效。")
+    window.login_state_label.setToolTip(tr('本機已儲存 Cookie 不代表已驗證 X 伺服器登入是否仍有效。'))
     auth.addWidget(window.login_state_label)
     window.login_help_label = _label(
         "登入完成後，請關閉剛才的專用瀏覽器視窗，再回來按儲存。\n"
         "專用瀏覽器設定檔與 X Cookie 只保留在本機 data，請勿分享。", "muted", wrap=True,
+        label_type=HeaderHelpLabel,
     )
     window.login_help_label.setAlignment(Qt.AlignmentFlag.AlignRight)
     window.login_help_label.setMaximumWidth(530)
+    help_policy = window.login_help_label.sizePolicy()
+    help_policy.setHeightForWidth(True)
+    help_policy.setVerticalPolicy(QSizePolicy.Policy.Minimum)
+    window.login_help_label.setSizePolicy(help_policy)
     auth.addWidget(window.login_help_label)
     header.addLayout(auth)
     root.addLayout(header)
@@ -351,8 +429,8 @@ def build_gallery_layout(window):
     tag_label.setBuddy(window.hashtag_input)
     tags.addWidget(tag_label)
     window.hashtag_input.setMinimumHeight(27)
-    window.hashtag_input.setPlaceholderText("#角色名稱 #作品標籤")
-    window.hashtag_input.setAccessibleName("目標標籤，可填多個，以空格或逗號分隔")
+    window.hashtag_input.setPlaceholderText(tr('#角色名稱 #作品標籤'))
+    window.hashtag_input.setAccessibleName(tr('目標標籤，可填多個，以空格或逗號分隔'))
     tags.addWidget(window.hashtag_input)
     tags.addWidget(_label("多個標籤以空格或逗號分隔；符合任一完整標籤即收集，重複標籤會合併。", "muted", wrap=True))
     form.addLayout(tags)
@@ -362,7 +440,7 @@ def build_gallery_layout(window):
     search_row = QHBoxLayout(search)
     search_row.setContentsMargins(16, 13, 16, 13)
     search_row.setSpacing(16)
-    window.search_checkbox.setText("標籤搜尋")
+    window.search_checkbox.setText(tr('標籤搜尋'))
     window.search_checkbox.setProperty("role", "source")
     search_row.addWidget(window.search_checkbox)
     search_row.addWidget(_label("搜尋含指定標籤的貼文。", "muted", wrap=True), 1)
@@ -373,13 +451,13 @@ def build_gallery_layout(window):
     author_layout = QVBoxLayout(authors)
     author_layout.setContentsMargins(16, 14, 16, 16)
     author_layout.setSpacing(9)
-    window.author_media_checkbox.setText("作者媒體補抓")
+    window.author_media_checkbox.setText(tr('作者媒體補抓'))
     window.author_media_checkbox.setProperty("role", "source")
     author_layout.addWidget(window.author_media_checkbox)
     auto = QVBoxLayout()
     auto.setContentsMargins(26, 0, 0, 0)
     auto.setSpacing(5)
-    window.discover_authors_checkbox.setText("自動補抓已發現的作者")
+    window.discover_authors_checkbox.setText(tr('自動補抓已發現的作者'))
     auto.addWidget(window.discover_authors_checkbox)
     auto.addWidget(_label("包含歷史紀錄與本次搜尋找到的作者，可以不填帳號。", "muted", wrap=True))
     author_layout.addLayout(auto)
@@ -390,7 +468,7 @@ def build_gallery_layout(window):
     author_layout.addWidget(_label("搜尋沒找到的作者可在此補上；每行一位，不需要數字 ID。", "muted", wrap=True))
     window.authors_input.setMinimumHeight(62)
     window.authors_input.setMaximumHeight(78)
-    window.authors_input.setPlaceholderText("@作者帳號\n或 https://x.com/作者/media")
+    window.authors_input.setPlaceholderText(tr('@作者帳號\n或 https://x.com/作者/media'))
     author_layout.addWidget(window.authors_input)
     form.addWidget(authors)
 
@@ -401,7 +479,7 @@ def build_gallery_layout(window):
     urls.addWidget(url_label)
     window.tweet_urls_input.setMinimumHeight(56)
     window.tweet_urls_input.setMaximumHeight(72)
-    window.tweet_urls_input.setPlaceholderText("https://x.com/作者/status/貼文編號\n每行一則貼文網址")
+    window.tweet_urls_input.setPlaceholderText(tr('https://x.com/作者/status/貼文編號\n每行一則貼文網址'))
     urls.addWidget(window.tweet_urls_input)
     urls.addWidget(_label("加入已找到的貼文，仍會核對完整標籤。", "muted", wrap=True))
     form.addLayout(urls)
@@ -415,7 +493,10 @@ def build_gallery_layout(window):
     info.setPixmap(line_icon("info").pixmap(QSize(20, 20)))
     info.setFixedSize(20, 20)
     strict_row.addWidget(info)
-    strict_row.addWidget(_label("所有來源都只下載含指定完整標籤的貼文；作者其他作品會略過。", "body", wrap=True), 1)
+    strict_row.addWidget(_label(
+        "搜尋、作者媒體頁與貼文網址皆核對原貼文的完整標籤；若啟用同串補抓，僅該原貼文作者的留言可不含標籤。",
+        "body", wrap=True,
+    ), 1)
     form.addWidget(strict)
     form.addStretch(1)
     window.collection_scroll.setWidget(left)
@@ -426,7 +507,7 @@ def build_gallery_layout(window):
     divider.setObjectName("galleryRule")
     body.addWidget(divider)
     right = QWidget()
-    right.setMinimumWidth(350)
+    right.setMinimumWidth(390)
     right_layout = QVBoxLayout(right)
     right_layout.setContentsMargins(0, 0, 0, 0)
     right_layout.setSpacing(12)
@@ -443,6 +524,7 @@ def build_gallery_layout(window):
     sidebar.addWidget(_label("本次收集", "section"))
     tag_row = QHBoxLayout()
     window.tag_summary_label = _label("", wrap=True)
+    window.tag_summary_label.setProperty("i18nSkip", True)
     window.tag_summary_label.setObjectName("tagSummary")
     window.tag_summary_label.setMaximumHeight(78)
     tag_row.addWidget(window.tag_summary_label)
@@ -463,6 +545,7 @@ def build_gallery_layout(window):
     destination_row.setContentsMargins(10, 0, 0, 0)
     destination_row.setSpacing(6)
     window.path_label.setTextFormat(Qt.TextFormat.PlainText)
+    window.path_label.setProperty("i18nSkip", True)
     window.path_label.setWordWrap(True)
     window.path_label.setMinimumWidth(0)
     window.path_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -471,8 +554,8 @@ def build_gallery_layout(window):
     window.choose_path_btn.setObjectName("chooseDestination")
     window.choose_path_btn.setText("")
     window.choose_path_btn.setIcon(line_icon("folder"))
-    window.choose_path_btn.setAccessibleName("選擇下載資料夾")
-    window.choose_path_btn.setToolTip("選擇下載資料夾")
+    window.choose_path_btn.setAccessibleName(tr('選擇下載資料夾'))
+    window.choose_path_btn.setToolTip(tr('選擇下載資料夾'))
     window.choose_path_btn.setFixedWidth(42)
     window.choose_path_btn.setMinimumHeight(42)
     destination_row.addWidget(window.choose_path_btn)
@@ -511,11 +594,11 @@ def build_gallery_layout(window):
 
     window.advanced_toggle = QToolButton()
     window.advanced_toggle.setObjectName("advancedToggle")
-    window.advanced_toggle.setText("進階設定")
+    window.advanced_toggle.setText(tr('進階設定'))
     window.advanced_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
     window.advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
     window.advanced_toggle.setCheckable(True)
-    window.advanced_toggle.setAccessibleName("展開或收合進階設定")
+    window.advanced_toggle.setAccessibleName(tr('展開或收合進階設定'))
     right_layout.addWidget(window.advanced_toggle)
     window.advanced_panel = QScrollArea()
     window.advanced_panel.setWidgetResizable(True)
@@ -528,14 +611,14 @@ def build_gallery_layout(window):
     advanced_layout.setSpacing(11)
     advanced_layout.addWidget(window.folder_by_user_checkbox)
     count = QHBoxLayout()
-    window.limit_count_checkbox.setText("限制本輪處理貼文數")
-    window.limit_count_checkbox.setToolTip("包含已下載且略過的貼文，避免重跑時超過預期範圍。")
+    window.limit_count_checkbox.setText(tr('限制本輪處理貼文數'))
+    window.limit_count_checkbox.setToolTip(tr('包含已下載且略過的貼文，避免重跑時超過預期範圍。'))
     count.addWidget(window.limit_count_checkbox, 1)
     window.limit_count_input.setFixedWidth(76)
     count.addWidget(window.limit_count_input)
     advanced_layout.addLayout(count)
     date_row = QHBoxLayout()
-    window.limit_date_checkbox.setText("只處理此日期起的貼文")
+    window.limit_date_checkbox.setText(tr('只處理此日期起的貼文'))
     date_row.addWidget(window.limit_date_checkbox, 1)
     window.limit_date_input.setFixedWidth(168)
     date_row.addWidget(window.limit_date_input)
@@ -543,7 +626,32 @@ def build_gallery_layout(window):
     advanced_layout.addWidget(window.human_behavior_checkbox)
     advanced_layout.addWidget(window.retry_failed_checkbox)
     advanced_layout.addWidget(_rule())
-    window.auto_driver_checkbox.setText("啟動時檢查 ChromeDriver")
+    advanced_layout.addWidget(window.reply_media_checkbox)
+    advanced_layout.addWidget(_label(
+        "原貼文符合目標標籤才補抓；留言可不含標籤，只收同一作者，不下載其他人的留言附件。",
+        "muted", wrap=True,
+    ))
+    advanced_layout.addWidget(_label("X 可見範圍有限，討論串補抓不保證全量。", "muted", wrap=True))
+    advanced_layout.addWidget(_rule())
+    advanced_layout.addWidget(_label("連線方式", "field"))
+    advanced_layout.addWidget(_label(
+        "X 載入或下載較慢時，可選用 WARP 本機代理；一般連線正常時不需要開啟。",
+        "muted", wrap=True,
+    ))
+    advanced_layout.addWidget(window.warp_proxy_checkbox)
+    proxy_row = QHBoxLayout()
+    proxy_label = _label("本機代理連接埠")
+    proxy_label.setBuddy(window.warp_proxy_port_input)
+    proxy_row.addWidget(proxy_label, 1)
+    window.warp_proxy_port_input.setFixedWidth(112)
+    proxy_row.addWidget(window.warp_proxy_port_input)
+    advanced_layout.addLayout(proxy_row)
+    advanced_layout.addWidget(_label(
+        "需先在官方 WARP 啟用 Local proxy；僅搜尋、補抓與下載使用代理，登入視窗沿用電腦設定。代理失敗時不會改用直連。",
+        "muted", wrap=True,
+    ))
+    advanced_layout.addWidget(_rule())
+    window.auto_driver_checkbox.setText(tr('啟動時檢查 ChromeDriver'))
     advanced_layout.addWidget(window.auto_driver_checkbox)
     advanced_layout.addWidget(window.driver_check_btn)
     advanced_layout.addWidget(_label("新版下載不需要此驅動；更新失敗不影響收集。", "muted", wrap=True))
@@ -559,11 +667,11 @@ def build_gallery_layout(window):
     right_layout.addWidget(window.advanced_panel)
     actions = QHBoxLayout()
     actions.setSpacing(10)
-    window.download_btn.setText("開始收集")
+    window.download_btn.setText(tr('開始收集'))
     window.download_btn.setProperty("variant", "primary")
     window.download_btn.setIcon(line_icon("download", color="#FFFFFF"))
     window.download_btn.setMinimumHeight(35)
-    window.stop_btn.setText("停止")
+    window.stop_btn.setText(tr('停止'))
     window.stop_btn.setIcon(line_icon("stop", color=MUTED))
     window.stop_btn.setMinimumHeight(35)
     actions.addWidget(window.download_btn, 3)
@@ -581,7 +689,7 @@ def build_gallery_layout(window):
     window.promotion_link.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
     window.promotion_link.setOpenExternalLinks(False)
     window.promotion_link.setToolTip("https://noonisawesome.dev/")
-    window.promotion_link.setAccessibleName("試試超讚的歌回直播軟體，開啟官方網站")
+    window.promotion_link.setAccessibleName(tr('試試超讚的歌回直播軟體，開啟官方網站'))
     window.promotion_link.linkActivated.connect(
         lambda _url: QDesktopServices.openUrl(QUrl("https://noonisawesome.dev/")))
     footer.addWidget(window.promotion_link)
@@ -597,7 +705,7 @@ def build_gallery_layout(window):
     window.authors_input.setTabChangesFocus(True)
     window.tweet_urls_input.setTabChangesFocus(True)
     sequence = (
-        window.theme_btn, window.help_btn, window.about_btn, window.cookie_btn, window.cookie_save_btn, window.cookie_import_btn,
+        window.language_combo, window.theme_btn, window.help_btn, window.about_btn, window.cookie_btn, window.cookie_save_btn, window.cookie_import_btn,
         window.hashtag_input,
         window.search_checkbox, window.author_media_checkbox,
         window.discover_authors_checkbox, window.authors_input,
@@ -606,6 +714,8 @@ def build_gallery_layout(window):
         window.limit_count_checkbox, window.limit_count_input,
         window.limit_date_checkbox, window.limit_date_input,
         window.human_behavior_checkbox, window.retry_failed_checkbox,
+        window.reply_media_checkbox,
+        window.warp_proxy_checkbox, window.warp_proxy_port_input,
         window.auto_driver_checkbox, window.driver_check_btn,
         window.download_btn, window.stop_btn, window.status_box, window.promotion_link,
     )

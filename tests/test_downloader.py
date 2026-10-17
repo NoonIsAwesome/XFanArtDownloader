@@ -138,6 +138,59 @@ class EngineTests(unittest.TestCase):
     def run_engine(self, source, session=None, **kwargs):
         return DownloadEngine(self.options(**kwargs), log=self.logs.append, source=source, session=session or Session()).run()
 
+    def test_cdn_redirect_can_complete_with_bounded_slow_connection_waits(self):
+        class RedirectSession(Session):
+            def get(self, url, **options):
+                self.urls.append(url)
+                self.last_options = options
+                response = Response(url, self.body)
+                response.status_code = 302 if len(self.urls) == 1 else 200
+                if response.status_code == 302:
+                    response.headers['Location'] = 'https://pbs.twimg.com/media/redirected.png'
+                return response
+        session = RedirectSession()
+        result = self.run_engine(Source([media()]), session)
+        self.assertEqual(result.downloaded, 1)
+        self.assertEqual(len(session.urls), 2)
+        self.assertFalse(session.last_options['allow_redirects'])
+        self.assertEqual(session.last_options['timeout'], (15, 45))
+
+    def test_unsafe_redirect_is_rejected_before_contacting_its_target(self):
+        for destination in ('https://outside.example/private', 'http://pbs.twimg.com/unsafe',
+                            'https://pbs.twimg.com:8443/media', 'https://user:secret@pbs.twimg.com/media'):
+            with self.subTest(destination=destination):
+                class RedirectSession(Session):
+                    def get(self, url, **options):
+                        self.urls.append(url)
+                        response = Response(url, b'')
+                        response.status_code = 302
+                        response.headers['Location'] = destination
+                        return response
+                session = RedirectSession()
+                with patch('downloader.threading.Event.wait', return_value=False):
+                    result = self.run_engine(Source([media()]), session)
+                self.assertEqual(result.downloaded, 0)
+                self.assertTrue(session.urls)
+                self.assertTrue(all(url == media()[0] for url in session.urls))
+
+    def test_stream_without_length_cannot_fill_disk_beyond_media_limit(self):
+        class NoLengthSession(Session):
+            def get(self, url, **options):
+                response = super().get(url, **options)
+                response.headers = {}
+                return response
+        with patch('downloader.MAX_MEDIA_BYTES', 8), patch('downloader.threading.Event.wait', return_value=False):
+            result = self.run_engine(Source([media()]), NoLengthSession())
+        self.assertEqual((result.downloaded, result.failed), (0, 1))
+        self.assertFalse(list((self.root / 'downloads').rglob('*.part')))
+        self.assertFalse(list((self.root / 'downloads').rglob('*.png')))
+
+    def test_announced_oversized_media_is_not_written(self):
+        with patch('downloader.MAX_MEDIA_BYTES', 8), patch('downloader.threading.Event.wait', return_value=False):
+            result = self.run_engine(Source([media()]), Session())
+        self.assertEqual((result.downloaded, result.failed), (0, 1))
+        self.assertFalse(list((self.root / 'downloads').rglob('*.part')))
+
     def test_every_media_of_matching_post_but_never_other_tag(self):
         result = self.run_engine(Source([media(num=1), media(num=2), media("1002", tags=["other"]), media("1003", tags=["noonle_extra"])]))
         self.assertEqual((result.downloaded, result.filtered, result.posts), (2, 2, 1))
@@ -341,6 +394,235 @@ class EngineTests(unittest.TestCase):
         source = Source(lambda url: OSError("source offline") if "/search?" in url else [media()])
         result = self.run_engine(source, authors=("artista",))
         self.assertEqual((result.downloaded, len(result.errors)), (1, 1))
+
+
+def thread_item(post="1001", *, parent=None, conversation="1001", author="ArtistA",
+                author_id="90", tags=None, num=1, context_only=False,
+                when="2026-10-15T17:30:00+00:00"):
+    url, data = media(post, num=num, tags=[] if tags is None else tags, content="reply", when=when)
+    data.update(reply_id=int(parent or 0), conversation_id=int(conversation))
+    data["author"] = {"name": author, "id": int(author_id)} if author_id else {"name": author}
+    return (None if context_only else url), data
+
+
+class ThreadSource(Source):
+    def __init__(self, batches, threads):
+        super().__init__(batches)
+        self.threads = threads
+        self.thread_urls = []
+
+    def iter_thread(self, url):
+        self.thread_urls.append(url)
+        batch = self.threads(url) if callable(self.threads) else self.threads
+        if isinstance(batch, Exception):
+            raise batch
+        yield from batch
+
+
+class ThreadEngineTests(unittest.TestCase):
+    setUp = EngineTests.setUp
+    tearDown = EngineTests.tearDown
+    options = EngineTests.options
+    run_engine = EngineTests.run_engine
+
+    def test_matching_seed_collects_only_same_author_related_media_with_original_tags(self):
+        root = thread_item(tags=["noonle"])
+        accepted = thread_item("1002", parent="1001")
+        renamed = thread_item("1003", parent="1002", author="Renamed", author_id="90")
+        rejected = [thread_item("1004", parent="1001", author="Other", author_id="91"),
+                    thread_item("1005", parent="1001", author_id="91"),
+                    thread_item("1006", parent="999", conversation="999"),
+                    thread_item("1007", parent=None),
+                    thread_item("1008", parent="1001", author_id=None)]
+        source = ThreadSource([root, root], [root, accepted, renamed, *rejected])
+        result = self.run_engine(source)
+        self.assertEqual((result.posts, result.downloaded, result.errors), (1, 3, []))
+        self.assertEqual(len(source.thread_urls), 1)
+        with Store(self.root / "state.sqlite3") as store:
+            self.assertEqual(store.post_state("1002")["hashtags"], [])
+            self.assertEqual(store.media_state("twitter:1002:1")["metadata"]["hashtags"], [])
+            self.assertEqual(store.thread_roots("1002"), ["1001"])
+            for item in rejected:
+                self.assertIsNone(store.media_state(f'twitter:{item[1]["tweet_id"]}:1'))
+
+    def test_untagged_seed_never_authorizes_thread_and_text_only_tagged_url_does(self):
+        url = "https://x.com/artista/status/1001"
+        child = thread_item("1002", parent="1001")
+        result = self.run_engine(ThreadSource([], [thread_item(context_only=True), child]),
+                                 search_enabled=False, tweet_urls=(url,))
+        self.assertEqual((result.posts, result.downloaded), (0, 0))
+        source = ThreadSource([], [thread_item(tags=["noonle"], context_only=True), child])
+        second = self.run_engine(source, search_enabled=False, tweet_urls=(url,))
+        self.assertEqual((second.posts, second.downloaded, second.errors), (1, 1, []))
+
+    def test_search_and_author_untagged_posts_do_not_open_reply_flow(self):
+        source = ThreadSource([thread_item()], [thread_item("1002", parent="1001")])
+        result = self.run_engine(source, authors=("artista",))
+        self.assertEqual((result.downloaded, source.thread_urls), (0, []))
+
+    def test_disabled_option_keeps_direct_search_and_retry_strict(self):
+        root = thread_item(tags=["noonle"])
+        source = ThreadSource([root], [root, thread_item("1002", parent="1001")])
+        result = self.run_engine(source, include_author_replies=False,
+                                 tweet_urls=("https://x.com/artista/status/1001",))
+        self.assertEqual((result.downloaded, source.thread_urls), (1, []))
+
+    def test_reply_seed_requires_descendant_chain_and_handles_out_of_order_parent(self):
+        root = thread_item("200", parent="100", conversation="100", tags=["noonle"])
+        # A sibling and ancestor share conversation_id, but are not descendants.
+        sibling = thread_item("201", parent="100", conversation="100")
+        ancestor = thread_item("100", conversation="100")
+        child = thread_item("205", parent="204", conversation="100")
+        parent = thread_item("204", parent="200", conversation="100", author="Other",
+                             author_id="91", context_only=True)
+        source = ThreadSource([root], [root, sibling, ancestor, child, parent])
+        result = self.run_engine(source)
+        self.assertEqual((result.posts, result.downloaded, result.errors), (1, 2, []))
+        with Store(self.root / "state.sqlite3") as store:
+            self.assertIsNone(store.media_state("twitter:201:1"))
+            self.assertIsNone(store.media_state("twitter:100:1"))
+            self.assertEqual(store.thread_roots("205"), ["200"])
+
+    def test_count_limits_tagged_seeds_and_completes_all_their_media_and_replies(self):
+        roots = [thread_item(tags=["noonle"], num=n) for n in (1, 2)]
+        children = [thread_item("1002", parent="1001", num=n) for n in (1, 2, 3)]
+        source = ThreadSource([*roots, thread_item("2000", conversation="2000", tags=["noonle"])],
+                              [*roots, *children])
+        result = self.run_engine(source, limit_count=1)
+        self.assertEqual((result.posts, result.downloaded, result.errors), (1, 5, []))
+        self.assertEqual(len(source.thread_urls), 1)
+
+    def test_completed_seed_is_revisited_for_new_replies_and_media_stay_deduplicated(self):
+        root = thread_item(tags=["noonle"])
+        self.run_engine(ThreadSource([root], [root]))
+        child = thread_item("1002", parent="1001")
+        source = ThreadSource([root, root], [root, child, child])
+        second = self.run_engine(source)
+        self.assertEqual((second.posts, second.downloaded, second.skipped), (1, 1, 1))
+        self.assertEqual(len(source.thread_urls), 1)
+
+    def test_rejected_url_snapshot_does_not_consume_later_matching_seed_thread(self):
+        root = thread_item(tags=["noonle"])
+        child = thread_item("1002", parent="1001")
+        calls = []
+        def thread_batch(url):
+            calls.append(url)
+            return [thread_item(tags=[]), child] if len(calls) == 1 else [root, child]
+        source = ThreadSource([root], thread_batch)
+        result = self.run_engine(source, tweet_urls=("https://x.com/artista/status/1001",))
+        self.assertEqual((result.posts, result.downloaded, result.errors), (1, 2, []))
+        self.assertEqual(len(source.thread_urls), 2)
+
+    def test_reply_retry_requires_saved_membership_current_root_tag_and_same_identity(self):
+        root, child = thread_item(tags=["noonle"]), thread_item("1002", parent="1001")
+        class ChildFail(Session):
+            def get(self, url, **kwargs):
+                if "1002_" in url:
+                    raise OSError("offline")
+                return super().get(url, **kwargs)
+        with patch("downloader.threading.Event.wait", return_value=False):
+            first = self.run_engine(ThreadSource([root], [root, child]), ChildFail())
+        self.assertEqual(first.failed, 1)
+        disabled = self.run_engine(Source([]), search_enabled=False, retry_failed=True,
+                                   include_author_replies=False)
+        self.assertEqual(disabled.downloaded, 0)
+        unrelated = self.run_engine(Source([]), search_enabled=False, retry_failed=True, hashtags=("other",))
+        self.assertEqual(unrelated.downloaded, 0)
+        second = self.run_engine(Source([]), search_enabled=False, retry_failed=True)
+        self.assertEqual((second.posts, second.downloaded), (1, 1))
+        with Store(self.root / "state.sqlite3") as store:
+            forged_url, forged = thread_item("1003", parent="1001")
+            forged["thread_root"] = "1001"
+            store.record_post("1003", "artista", "reply", [], "forged", False)
+            store.record_media("1003", "twitter:1003:1", forged_url, forged, str(self.root / "downloads"))
+            store.mark_failed("twitter:1003:1", "offline")
+            changed = dict(child[1], author={"name": "ArtistA", "id": 91})
+            store.record_media("1002", "twitter:1002:1", child[0], changed, str(self.root / "downloads"))
+            store.mark_failed("twitter:1002:1", "offline")
+        third = self.run_engine(Source([]), search_enabled=False, retry_failed=True)
+        self.assertEqual(third.downloaded, 0)
+
+    def test_stopped_reply_stays_pending_and_resumes_through_verified_root(self):
+        root, child = thread_item(tags=["noonle"]), thread_item("1002", parent="1001")
+        event = threading.Event()
+        class StopChild(Session):
+            def get(self, url, **kwargs):
+                self.urls.append(url)
+                return Response(url, self.body, event if "1002_" in url else None)
+        first = DownloadEngine(self.options(), source=ThreadSource([root], [root, child]),
+            session=StopChild(), stop_event=event, log=self.logs.append).run()
+        self.assertTrue(first.stopped)
+        with Store(self.root / "state.sqlite3") as store:
+            self.assertEqual(store.media_state("twitter:1002:1")["state"], "pending")
+        second = self.run_engine(Source([]), search_enabled=False, retry_failed=True)
+        self.assertEqual((second.posts, second.downloaded), (1, 1))
+
+    def test_taipei_cutoff_gates_seed_and_replies_cannot_predate_it(self):
+        old = thread_item(tags=["noonle"], when="2026-10-15T15:59:59Z")
+        source = ThreadSource([old], [old, thread_item("1002", parent="1001")])
+        result = self.run_engine(source, since=date(2026, 10, 16))
+        self.assertEqual((result.downloaded, source.thread_urls), (0, []))
+        root = thread_item(tags=["noonle"], when="2026-10-15T16:00:00Z")
+        child = thread_item("1002", parent="1001", when="2026-10-15T16:00:01Z")
+        impossible = thread_item("1003", parent="1001", when="2026-10-15T15:59:59Z")
+        good = self.run_engine(ThreadSource([root], [root, child, impossible]), since=date(2026, 10, 16))
+        self.assertEqual((good.posts, good.downloaded), (1, 2))
+        self.assertEqual(len(good.errors), 1)
+
+    def test_missing_root_context_date_is_reported_partial_instead_of_approving_replies(self):
+        root = thread_item(tags=["noonle"], when="")
+        child = thread_item("1002", parent="1001")
+        result = self.run_engine(ThreadSource([root], [root, child]))
+        self.assertEqual((result.downloaded, len(result.errors)), (1, 1))
+
+    def test_images_and_videos_are_collected_automatically_in_the_same_thread(self):
+        root = thread_item(tags=["noonle"])
+        video_url, video = thread_item("1002", parent="1001")
+        video_url = "https://video.twimg.com/ext_tw_video/1002/vid/clip.mp4"
+        video.update(extension="mp4", type="video")
+        def box(kind, payload):
+            return (8 + len(payload)).to_bytes(4, "big") + kind + payload
+        video_bytes = box(b"ftyp", b"isom0000") + box(b"moov", b"metadata") + box(b"mdat", b"media")
+        class MixedSession(Session):
+            def get(self, url, **kwargs):
+                self.urls.append(url)
+                return Response(url, video_bytes if "video.twimg.com" in url else self.body)
+        result = self.run_engine(ThreadSource([root], [root, (video_url, video)]), MixedSession())
+        self.assertEqual((result.downloaded, result.errors), (2, []))
+        self.assertEqual(len(list((self.root / "downloads").rglob("*.mp4"))), 1)
+
+    def test_unknown_ancestry_buffer_is_bounded_and_partial_is_visible(self):
+        root = thread_item("200", parent="100", conversation="100", tags=["noonle"])
+        children = [thread_item(str(n), parent="204", conversation="100") for n in (205, 206, 207)]
+        parent = thread_item("204", parent="200", conversation="100", context_only=True)
+        with patch("downloader.MAX_DEFERRED_MEDIA", 2):
+            result = self.run_engine(ThreadSource([root], [root, *children, parent]))
+        self.assertEqual((result.posts, result.downloaded, len(result.errors)), (1, 3, 1))
+        self.assertIn("未完整", result.errors[0])
+
+    def test_legacy_metadata_without_numeric_author_id_uses_canonical_handle(self):
+        root = thread_item(tags=["noonle"], author_id=None)
+        child = thread_item("1002", parent="1001", author="ARTISTA", author_id=None)
+        result = self.run_engine(ThreadSource([root], [root, child]))
+        self.assertEqual((result.downloaded, result.errors), (2, []))
+
+    def test_timeline_owner_never_substitutes_for_missing_reply_author(self):
+        root = thread_item(tags=["noonle"])
+        unknown_url, unknown = thread_item("1002", parent="1001")
+        unknown.update(author={}, user={"name": "ArtistA", "id": 90})
+        child = thread_item("1003", parent="1001")
+        result = self.run_engine(ThreadSource([root], [root, (unknown_url, unknown), child]))
+        self.assertEqual((result.downloaded, len(result.errors)), (2, 1))
+        with Store(self.root / "state.sqlite3") as store:
+            self.assertIsNone(store.media_state("twitter:1002:1"))
+            self.assertEqual(store.thread_roots("1002"), [])
+            self.assertEqual(store.thread_roots("1003"), ["1001"])
+
+    def test_thread_errors_do_not_expose_upstream_secret_payload(self):
+        root = thread_item(tags=["noonle"])
+        result = self.run_engine(ThreadSource([root], OSError("auth_token=generated-secret")))
+        self.assertEqual((result.downloaded, len(result.errors)), (1, 1))
+        self.assertNotIn("generated-secret", " ".join(result.errors + self.logs))
 
 
 

@@ -1,7 +1,8 @@
 """A local, themed reading guide. Opening it never logs in or makes a request."""
 from __future__ import annotations
 
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QSize, Qt, QUrl
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
@@ -9,13 +10,14 @@ from PyQt6.QtWidgets import (
 
 from ui_design import line_icon
 from ui_theme import apply_dialog_theme, theme_colors
+from i18n import tr, locale as ui_locale
 
 
 STEPS = (
     (
         "填入想收集的標籤",
         "請自行填入完整 #標籤，多個標籤可用空白、逗號或分號分隔。"
-        "符合任一標籤即可（OR）；搜尋、作者補抓與貼文網址都使用相同的完整標籤條件。",
+        "符合任一標籤即可（OR）；搜尋、作者媒體頁與貼文網址的原貼文都使用相同的完整標籤條件。",
     ),
     (
         "一般瀏覽器登入，關窗後再儲存",
@@ -26,7 +28,7 @@ STEPS = (
         "自動作者補抓，手動填寫可留空",
         "自動：使用本輪與歷史紀錄已發現的作者，不必重填作者欄。\n"
         "手動：補上尚未發現的畫師，可填 @帳號 或作者的 /media 網址，不用數字 ID；"
-        "已知貼文也可直接貼網址。補抓作品仍須含任一完整目標標籤。",
+        "已知貼文也可直接貼網址。作者媒體頁的作品仍須含任一完整目標標籤。",
     ),
     (
         "選目錄，開始收集",
@@ -41,6 +43,27 @@ PRIVACY = (
     "本工具不會上傳這些本機檔案；擷取作品仍需向 X 傳送請求與必要的登入 Cookie。"
 )
 COPYRIGHT = "作品著作權屬原作者；請尊重授權，勿未經同意轉載或公開分享。"
+CONNECTION_HELP_URL = "https://developers.cloudflare.com/warp-client/warp-modes/"
+THREAD_HELP = (
+    "圖片與影片會自動下載。進階設定可開關「補抓原作者在同一討論串的圖片與影片」。"
+    "原貼文符合目標標籤後，才補抓同一作者在該串的媒體留言；留言本身可沒有標籤。"
+    "其他作者、引用貼文及無法確認關聯的媒體不會因這個選項而下載。"
+    "這個例外只用於該討論串，作者媒體頁的其他作品仍逐篇檢查標籤。"
+    "X 可能隱藏或限制部分留言，無法保證收齊。"
+)
+CONNECTION_HELP = (
+    "X 載入或下載較慢時，可選用 WARP 本機代理；一般連線正常時不需要開啟。\n"
+    "若只想讓本工具的下載經 WARP，請先自行安裝官方 WARP，於 Preferences → Advanced → "
+    "Configure Proxy 啟用 Local proxy 並選擇連接埠（選單依版本可能不同）。\n"
+    "再到 App「進階設定」勾選 WARP 本機代理，填入相同連接埠（預設 40000）。"
+    "只有標籤搜尋、作者補抓與媒體下載經代理；登入瀏覽器沿用作業系統網路設定。\n"
+    "App 不會安裝、啟用或切換 WARP，也不會自動更改系統 DNS。"
+    "代理失敗會回報，不會自動改為直接連線。\n"
+    "1.1.1.1 主要處理 DNS 查詢；WARP 會改變流量路徑。是否改善取決於網路環境，"
+    "不能保證 X 變快，也不代表匿名。\n"
+    "連線較慢時可先用一般瀏覽器確認 X 能否開啟，暫停其他下載或稍後重試；"
+    "已完成的下載紀錄會保留，可再補抓。"
+)
 
 
 class UsageGuideDialog(QDialog):
@@ -50,8 +73,9 @@ class UsageGuideDialog(QDialog):
         super().__init__(parent)
         self.theme_mode = "dark" if theme == "dark" else "light"
         self.setObjectName("usageGuideDialog")
-        self.setWindowTitle("FanArt Downloader 使用說明")
-        self.setAccessibleName("FanArt Downloader 四步使用說明")
+        self.setProperty("i18nSkip", True)
+        self.setWindowTitle(tr("FanArt Downloader 使用說明"))
+        self.setAccessibleName(tr("FanArt Downloader 四步使用說明"))
         self.setModal(False)
         if parent is not None:
             self.setWindowIcon(parent.windowIcon())
@@ -85,7 +109,7 @@ class UsageGuideDialog(QDialog):
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setObjectName("usageGuideScroll")
-        self.scroll_area.setAccessibleName("四步操作與登入資料說明")
+        self.scroll_area.setAccessibleName(tr("四步操作與登入資料說明"))
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -128,6 +152,27 @@ class UsageGuideDialog(QDialog):
             row.addLayout(section, 1)
             body.addLayout(row)
 
+        thread_help = QVBoxLayout()
+        thread_help.setSpacing(6)
+        self.thread_title = self._label("原作者留言補抓", "usageGuideThreadTitle", "stepTitle")
+        self.thread_label = self._label(THREAD_HELP, "usageGuideThread", "body")
+        thread_help.addWidget(self.thread_title)
+        thread_help.addWidget(self.thread_label)
+        body.addLayout(thread_help)
+
+        connection = QVBoxLayout()
+        connection.setSpacing(6)
+        self.connection_title = self._label("連線較慢時", "usageGuideConnectionTitle", "stepTitle")
+        self.connection_label = self._label(CONNECTION_HELP, "usageGuideConnection", "body")
+        self.connection_help_button = QPushButton(tr("Cloudflare 官方模式說明"))
+        self.connection_help_button.setObjectName("usageGuideConnectionHelp")
+        self.connection_help_button.setAccessibleName(tr("在瀏覽器開啟 Cloudflare 官方說明"))
+        self.connection_help_button.clicked.connect(lambda: self._open_connection_help(CONNECTION_HELP_URL))
+        connection.addWidget(self.connection_title)
+        connection.addWidget(self.connection_label)
+        connection.addWidget(self.connection_help_button, 0, Qt.AlignmentFlag.AlignLeft)
+        body.addLayout(connection)
+
         self.privacy_frame = QFrame()
         self.privacy_frame.setObjectName("usageGuidePrivacyPanel")
         privacy = QVBoxLayout(self.privacy_frame)
@@ -146,27 +191,52 @@ class UsageGuideDialog(QDialog):
         layout.addWidget(self.copyright_label)
         footer = QHBoxLayout()
         footer.addStretch()
-        self.close_button = QPushButton("關閉說明")
+        self.close_button = QPushButton(tr("關閉說明"))
         self.close_button.setObjectName("usageGuideClose")
-        self.close_button.setAccessibleName("關閉使用說明")
+        self.close_button.setAccessibleName(tr("關閉使用說明"))
         self.close_button.setMinimumSize(112, 38)
         self.close_button.setDefault(True)
         self.close_button.clicked.connect(self.accept)
         footer.addWidget(self.close_button)
         layout.addLayout(footer)
-        self.setTabOrder(self.scroll_area, self.close_button)
+        self.setTabOrder(self.scroll_area, self.connection_help_button)
+        self.setTabOrder(self.connection_help_button, self.close_button)
         self.set_theme(self.theme_mode)
+        self.retranslate_ui()
 
     @staticmethod
     def _label(text: str, name: str, role: str) -> QLabel:
-        label = QLabel(text)
+        label = QLabel(tr(text))
         label.setObjectName(name)
         label.setProperty("guideRole", role)
+        label.setProperty("guideSource", text)
         label.setTextFormat(Qt.TextFormat.PlainText)
         label.setWordWrap(True)
         label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         return label
+
+    def retranslate_ui(self) -> None:
+        """Update this instance without resetting its theme or reading position."""
+        position = self.scroll_area.verticalScrollBar().value()
+        self.setLocale(ui_locale())
+        self.setWindowTitle(tr("FanArt Downloader 使用說明"))
+        self.setAccessibleName(tr("FanArt Downloader 四步使用說明"))
+        self.scroll_area.setAccessibleName(tr("四步操作與登入資料說明"))
+        self.close_button.setText(tr("關閉說明"))
+        self.close_button.setAccessibleName(tr("關閉使用說明"))
+        self.connection_help_button.setText(tr("Cloudflare 官方模式說明"))
+        self.connection_help_button.setAccessibleName(tr("在瀏覽器開啟 Cloudflare 官方說明"))
+        for label in self.findChildren(QLabel):
+            source = label.property("guideSource")
+            if isinstance(source, str):
+                label.setText(tr(source))
+        self.scroll_area.widget().layout().activate()
+        self.scroll_area.verticalScrollBar().setValue(position)
+
+    def _open_connection_help(self, url: str) -> None:
+        if url == CONNECTION_HELP_URL:
+            QDesktopServices.openUrl(QUrl(url))
 
     def set_theme(self, theme: str) -> None:
         self.theme_mode = "dark" if theme == "dark" else "light"

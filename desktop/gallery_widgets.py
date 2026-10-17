@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QSpinBox,
     QToolButton, QVBoxLayout, QWidget,
 )
+from i18n import tr, locale as ui_locale
 
 
 def _colors(theme: str):
@@ -68,10 +69,10 @@ class _ThemedCalendar(QCalendarWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.colors = None
-        self.setLocale(QLocale("zh_TW"))
+        self.setLocale(ui_locale())
         self.setNavigationBarVisible(False)
         self.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
-        self.setHorizontalHeaderFormat(QCalendarWidget.HorizontalHeaderFormat.SingleLetterDayNames)
+        self.setHorizontalHeaderFormat(QCalendarWidget.HorizontalHeaderFormat.ShortDayNames)
         self.setFirstDayOfWeek(Qt.DayOfWeek.Monday)
         self.setGridVisible(False)
         self.setMinimumSize(308, 224)
@@ -120,7 +121,7 @@ class _ThemedCalendar(QCalendarWidget):
         font.setPixelSize(14)
         font.setBold(selected or (today and enabled))
         painter.setFont(font)
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(date.day()))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.locale().toString(date.day()))
         painter.restore()
 
 
@@ -156,7 +157,7 @@ class _DatePopup(QFrame):
         self.month_menu = QMenu(self.month_button)
         self.month_actions = []
         for month in range(1, 13):
-            action = self.month_menu.addAction(f"{month} 月")
+            action = self.month_menu.addAction(ui_locale().standaloneMonthName(month, QLocale.FormatType.LongFormat))
             action.triggered.connect(lambda checked=False, month=month: self._choose_month(month))
             self.month_actions.append(action)
         self.month_button.setMenu(self.month_menu)
@@ -167,7 +168,6 @@ class _DatePopup(QFrame):
         self.year_input.setToolTip("直接輸入年份，按 Enter 確認")
         self.year_input.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.year_input.setKeyboardTracking(False)
-        self.year_input.setSuffix(" 年")
         self.year_input.setFixedWidth(90)
         self.year_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
         heading.addWidget(self.previous_button)
@@ -198,6 +198,30 @@ class _DatePopup(QFrame):
         self.today_button.clicked.connect(lambda: owner._apply_calendar_date(QDate.currentDate()))
         self.close_button.clicked.connect(self.hide)
         self.sync_from_owner()
+        self.retranslate_ui()
+
+    def retranslate_ui(self):
+        """Locale labels without changing the selected date or browsed month."""
+        year, month = self.calendar.yearShown(), self.calendar.monthShown()
+        language = ui_locale()
+        for widget in [self, *self.findChildren(QWidget)]:
+            widget.setLocale(language)
+        self.previous_button.setAccessibleName(tr("上一個月"))
+        self.previous_button.setToolTip(tr("上一個月"))
+        self.next_button.setAccessibleName(tr("下一個月"))
+        self.next_button.setToolTip(tr("下一個月"))
+        self.month_button.setAccessibleName(tr("選擇月份"))
+        self.month_button.setToolTip(tr("選擇月份"))
+        self.year_input.setAccessibleName(tr("年份，可直接輸入"))
+        self.year_input.setToolTip(tr("直接輸入年份，按 Enter 確認"))
+        self.today_button.setText(tr("今天"))
+        self.today_button.setAccessibleName(tr("選擇今天"))
+        self.close_button.setText(tr("關閉"))
+        self.close_button.setAccessibleName(tr("關閉日曆，不更改日期"))
+        for index, action in enumerate(self.month_actions, 1):
+            action.setText(language.standaloneMonthName(index, QLocale.FormatType.LongFormat))
+        self.calendar.setCurrentPage(year, month)
+        self._page_changed(year, month)
 
     def _choose_month(self, month: int):
         self.calendar.setCurrentPage(self.calendar.yearShown(), month)
@@ -216,7 +240,7 @@ class _DatePopup(QFrame):
         blocked = self.year_input.blockSignals(True)
         self.year_input.setValue(year)
         self.year_input.blockSignals(blocked)
-        self.month_button.setText(f"{month} 月")
+        self.month_button.setText(ui_locale().standaloneMonthName(month, QLocale.FormatType.ShortFormat))
         first = QDate(year, month, 1)
         last = QDate(year, month, first.daysInMonth())
         minimum, maximum = self.owner.minimumDate(), self.owner.maximumDate()
@@ -286,7 +310,8 @@ class GalleryDateEdit(QDateEdit):
         self._theme = theme
         self._calendar_popup_enabled = True
         self.setObjectName("galleryDateEdit")
-        self.setLocale(QLocale("zh_TW"))
+        self.setProperty("i18nSkip", True)
+        self.setLocale(ui_locale())
         self.setDisplayFormat("yyyy-MM-dd")
         self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         super().setCalendarPopup(False)
@@ -303,6 +328,20 @@ class GalleryDateEdit(QDateEdit):
         self.dateChanged.connect(lambda unused: self.popup.sync_from_owner())
         self.setMinimumHeight(36)
         self.set_theme(theme)
+        self.retranslate_ui()
+
+    def retranslate_ui(self):
+        selected = self.date()
+        section = self.currentSection()
+        blocked = self.blockSignals(True)
+        self.setLocale(ui_locale())
+        self.setDate(selected)
+        self.blockSignals(blocked)
+        self.setCurrentSection(section)
+        self.setAccessibleName(tr("貼文起始日期"))
+        self.calendar_button.setAccessibleName(tr("開啟日期日曆"))
+        self.calendar_button.setToolTip(tr("開啟日曆；也可直接輸入 yyyy-MM-dd"))
+        self.popup.retranslate_ui()
 
     def calendarPopup(self) -> bool:
         return self._calendar_popup_enabled
@@ -435,7 +474,8 @@ class UserNoticeDialog(QDialog):
     def __init__(self, parent=None, theme: str = "light"):
         super().__init__(parent)
         self.setObjectName("userNoticeDialog")
-        self.setWindowTitle("使用者提醒")
+        self.setProperty("i18nSkip", True)
+        self.setWindowTitle(tr("使用者提醒"))
         if parent is not None:
             self.setWindowIcon(parent.windowIcon())
         self.setModal(True)
@@ -452,11 +492,12 @@ class UserNoticeDialog(QDialog):
         self.notice_icon.setFixedSize(46, 46)
         self.notice_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         heading.addWidget(self.notice_icon)
-        self.title_label = QLabel("使用者注意事項")
+        self._translated_labels = []
+        self.title_label = self._text("使用者注意事項")
         self.title_label.setObjectName("noticeTitle")
         heading.addWidget(self.title_label, 1)
         layout.addLayout(heading)
-        self.introduction_label = QLabel(
+        self.introduction_label = self._text(
             "本工具僅供個人非商業用途使用。\n下載的所有圖片與影片著作權均屬原作者所有。"
         )
         self.introduction_label.setWordWrap(True)
@@ -466,7 +507,7 @@ class UserNoticeDialog(QDialog):
         restriction_layout = QVBoxLayout(restrictions)
         restriction_layout.setContentsMargins(16, 14, 16, 16)
         restriction_layout.setSpacing(10)
-        forbidden_label = QLabel("請勿：")
+        forbidden_label = self._text("請勿：")
         forbidden_label.setObjectName("noticeListHeading")
         restriction_layout.addWidget(forbidden_label)
         self.bullets = []
@@ -480,18 +521,18 @@ class UserNoticeDialog(QDialog):
             bullet = _NoticeBullet()
             self.bullets.append(bullet)
             row.addWidget(bullet, 0, Qt.AlignmentFlag.AlignTop)
-            label = QLabel(text)
+            label = self._text(text)
             label.setWordWrap(True)
             row.addWidget(label, 1)
             restriction_layout.addLayout(row)
         layout.addWidget(restrictions)
-        self.responsibility_label = QLabel("若大量使用造成帳號異常或封鎖，使用者需自行承擔責任。")
+        self.responsibility_label = self._text("若大量使用造成帳號異常或封鎖，使用者需自行承擔責任。")
         self.responsibility_label.setObjectName("noticeResponsibility")
         self.responsibility_label.setWordWrap(True)
         layout.addWidget(self.responsibility_label)
         footer = QHBoxLayout()
         footer.addStretch(1)
-        self.accept_button = QPushButton("我知道了")
+        self.accept_button = QPushButton(tr("我知道了"))
         self.accept_button.setObjectName("noticeAccept")
         self.accept_button.setMinimumWidth(112)
         self.accept_button.setDefault(True)
@@ -499,6 +540,21 @@ class UserNoticeDialog(QDialog):
         footer.addWidget(self.accept_button)
         layout.addLayout(footer)
         self.set_theme(theme)
+        self.retranslate_ui()
+
+    def _text(self, source: str) -> QLabel:
+        label = QLabel(tr(source))
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        label.setWordWrap(True)
+        self._translated_labels.append((label, source))
+        return label
+
+    def retranslate_ui(self):
+        self.setLocale(ui_locale())
+        self.setWindowTitle(tr("使用者提醒"))
+        for label, source in self._translated_labels:
+            label.setText(tr(source))
+        self.accept_button.setText(tr("我知道了"))
 
     def set_theme(self, theme: str):
         self._theme = "dark" if theme == "dark" else "light"

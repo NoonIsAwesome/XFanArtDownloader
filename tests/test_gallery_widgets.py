@@ -8,13 +8,14 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "desktop"))
 
-from PyQt6.QtCore import QDate, Qt
+from PyQt6.QtCore import QDate, QLocale, Qt
 from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QDateEdit, QDateTimeEdit, QDialog, QLabel, QTableView
 
 from gallery_widgets import GalleryDateEdit, UserNoticeDialog
 from ui_design import theme_colors
+import i18n
 
 
 class DateAndNoticeTests(unittest.TestCase):
@@ -24,6 +25,13 @@ class DateAndNoticeTests(unittest.TestCase):
         cls.app.setQuitOnLastWindowClosed(False)
 
     def setUp(self):
+        previous_language = i18n.language_mode()
+        i18n.set_language("zh_TW")
+        i18n.install_qt_translator(self.app)
+        def restore_language():
+            i18n.set_language(previous_language)
+            i18n.install_qt_translator(self.app)
+        self.addCleanup(restore_language)
         self.editor = GalleryDateEdit()
         self.editor.setDate(QDate(2026, 10, 16))
         self.editor.resize(168, 40)
@@ -140,6 +148,56 @@ class DateAndNoticeTests(unittest.TestCase):
             self.assertEqual(calendar.headerTextFormat().foreground().color(), QColor(colors["muted"]))
             for day in (Qt.DayOfWeek.Saturday, Qt.DayOfWeek.Sunday):
                 self.assertEqual(calendar.weekdayTextFormat(day).foreground().color(), QColor(colors["ink"]))
+
+    def test_language_switch_preserves_selected_date_browsed_month_and_range_while_localizing_calendar(self):
+        self.editor.setDateRange(QDate(2020, 3, 15), QDate(2030, 10, 20))
+        self.editor.setDate(QDate(2024, 2, 29))
+        self.editor.set_theme("dark")
+        self.editor.show_calendar_popup()
+        calendar = self.editor.calendarWidget()
+        calendar.setCurrentPage(2025, 8)
+        for language in ("en", "ja", "ko", "zh_CN", "zh_TW"):
+            with self.subTest(language=language):
+                i18n.set_language(language)
+                i18n.install_qt_translator(self.app)
+                self.editor.retranslate_ui()
+                self.app.processEvents()
+                popup = self.editor.popup
+                self.assertEqual(self.editor.date(), QDate(2024, 2, 29))
+                self.assertEqual(calendar.selectedDate(), QDate(2024, 2, 29))
+                self.assertEqual((calendar.yearShown(), calendar.monthShown()), (2025, 8))
+                self.assertEqual(self.editor.minimumDate(), QDate(2020, 3, 15))
+                self.assertEqual(self.editor.maximumDate(), QDate(2030, 10, 20))
+                self.assertEqual(self.editor._theme, "dark")
+                self.assertTrue(popup.isVisible())
+                self.assertEqual(calendar.locale().name(), i18n.locale().name())
+                self.assertEqual(popup.month_actions[7].text(), i18n.locale().standaloneMonthName(8, QLocale.FormatType.LongFormat))
+                self.assertEqual(popup.month_button.text(), i18n.locale().standaloneMonthName(8, QLocale.FormatType.ShortFormat))
+                self.assertEqual(popup.today_button.text(), i18n.tr("今天"))
+                self.assertEqual(popup.close_button.accessibleName(), i18n.tr("關閉日曆，不更改日期"))
+                view = calendar.findChild(QTableView)
+                weekdays = [str(view.model().index(0, column).data()) for column in range(view.model().columnCount())]
+                self.assertIn(i18n.locale().dayName(1, QLocale.FormatType.ShortFormat), weekdays)
+
+    def test_notice_retranslates_in_place_in_each_language_without_changing_theme_or_modal_behavior(self):
+        dialog = UserNoticeDialog(theme="dark")
+        self.addCleanup(dialog.deleteLater)
+        self.addCleanup(dialog.close)
+        source = "本工具僅供個人非商業用途使用。\n下載的所有圖片與影片著作權均屬原作者所有。"
+        for language in ("en", "ja", "ko", "zh_CN", "zh_TW"):
+            with self.subTest(language=language):
+                i18n.set_language(language)
+                i18n.install_qt_translator(self.app)
+                dialog.retranslate_ui()
+                self.app.processEvents()
+                self.assertFalse(dialog.isVisible())
+                self.assertTrue(dialog.isModal())
+                self.assertEqual(dialog.windowTitle(), i18n.tr("使用者提醒"))
+                self.assertEqual(dialog.introduction_label.text(), i18n.tr(source))
+                self.assertEqual(dialog.accept_button.text(), i18n.tr("我知道了"))
+                self.assertEqual(dialog._theme, "dark")
+                if language != "zh_TW":
+                    self.assertNotEqual(dialog.introduction_label.text(), source)
 
     def test_notice_has_original_substance_and_accepts_in_both_themes(self):
         expected = (

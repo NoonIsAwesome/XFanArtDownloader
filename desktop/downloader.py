@@ -6,6 +6,7 @@ code, browser DOM, scroll count or screen position enters this download engine.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone, timedelta
 import hashlib
@@ -17,21 +18,60 @@ import tempfile
 import threading
 import time
 import unicodedata
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import requests
 from PIL import Image
 
 from storage import Store
 from gallery_client import Cancelled, GallerySource
+from network import check_proxy_available, configure_session, warp_proxy_url
+from thread_collection import (MAX_DEFERRED_MEDIA, context_date, eligible_reply, post_context,
+                               reply_relation, same_author, same_context)
 
 TAIPEI = timezone(timedelta(hours=8))
+MEDIA_HOSTS = frozenset({'pbs.twimg.com', 'video.twimg.com'})
+MEDIA_TIMEOUT = (15, 45)
+MAX_MEDIA_BYTES = 1024 * 1024 * 1024
+MAX_MEDIA_REDIRECTS = 5
 _HANDLE = re.compile(r"[A-Za-z0-9_]{1,15}\Z")
 _POST_PATH = re.compile(r"/(?:[A-Za-z0-9_]{1,15}/status|i/(?:web/)?status)/(\d+)(?:/.*)?\Z")
 
 
 class LimitReached(Exception):
     pass
+
+
+def _validated_media_url(value: str) -> str:
+    """Check every hop before a request; never follow an off-site redirect."""
+    try:
+        parsed = urlparse(value)
+        if (len(value) > 8192 or parsed.scheme != 'https' or parsed.hostname not in MEDIA_HOSTS
+                or parsed.username or parsed.password or parsed.port or parsed.fragment):
+            raise ValueError()
+    except (TypeError, ValueError):
+        raise ValueError('媒體網址必須是 X 圖片或影片主機的 HTTPS 連結。') from None
+    return value
+
+
+@contextmanager
+def _media_response(session, url: str):
+    """Allow a few CDN redirects while validating TLS and host at every hop."""
+    current = _validated_media_url(url)
+    for _ in range(MAX_MEDIA_REDIRECTS + 1):
+        with session.get(current, stream=True, timeout=MEDIA_TIMEOUT, allow_redirects=False,
+                         headers={'Referer': 'https://x.com/', 'Accept-Encoding': 'identity'}) as response:
+            _validated_media_url(response.url)
+            if getattr(response, 'status_code', 200) in {301, 302, 303, 307, 308}:
+                location = response.headers.get('Location')
+                if not isinstance(location, str) or not location:
+                    raise ValueError('媒體重新導向缺少有效網址。')
+                current = _validated_media_url(urljoin(current, location))
+                continue
+            response.raise_for_status()
+            yield response
+            return
+    raise ValueError('媒體重新導向次數過多，已停止此檔案。')
 
 
 def _tag_character(char: str) -> bool:
@@ -149,6 +189,9 @@ class DownloadOptions:
     delay: bool = True
     retry_failed: bool = True
     hashtags: tuple[str, ...] = ()
+    warp_proxy: bool = False
+    warp_proxy_port: int = 40000
+    include_author_replies: bool = True
 
 
 @dataclass
@@ -229,6 +272,8 @@ class DownloadEngine:
         self.source = source
         self.session = session or requests.Session()
         self._owns_session = session is None
+        self.proxy_url = warp_proxy_url(options.warp_proxy, options.warp_proxy_port)
+        configure_session(self.session, self.proxy_url)
         self.result = RunResult()
         self._posts: set[str] = set()
         self._filtered: set[str] = set()
@@ -236,6 +281,8 @@ class DownloadEngine:
         self._authors: set[str] = set()
         self._failed_media: set[str] = set()
         self._retry_posts: set[str] = set()
+        self._thread_done: set[str] = set()
+        self._thread_posts: set[str] = set()
 
     def _failure(self, key: str, message: str):
         self.store.mark_failed(key, message)
@@ -262,6 +309,32 @@ class DownloadEngine:
             self._posts.add(post_id)
             self.result.posts += 1
 
+    def _saved_seed(self, post_id: str) -> dict | None:
+        row = self.store.post_state(post_id)
+        if row and self._gate({"hashtags": row["hashtags"], "date": row["created_at"]}):
+            return row
+        return None
+
+    def _retry_seed(self, row: dict) -> str | None:
+        if self._gate(row["metadata"]):
+            return str(row["post_id"])
+        if not self.options.include_author_replies:
+            return None
+        try:
+            candidate = post_context(row["metadata"])
+        except ValueError:
+            return None
+        if candidate["post_id"] != str(row["post_id"]):
+            return None
+        for seed_id in self.store.thread_roots(row["post_id"]):
+            seed = self._saved_seed(seed_id)
+            evidence = self.store.thread_context(seed_id, row["post_id"])
+            if (seed and evidence and same_context(candidate, evidence)
+                    and eligible_reply(seed["context"], evidence,
+                        lambda parent: self.store.thread_context(seed_id, parent))):
+                return seed_id
+        return None
+
     def run(self) -> RunResult:
         self.tags = parse_hashtags(self.options.hashtags or self.options.hashtag)
         self.tag = self.tags[0]  # Keep the original single-target attribute usable.
@@ -270,26 +343,34 @@ class DownloadEngine:
             raise ValueError("推文數上限必須大於 0。")
         authors = {normalize_author(author) for author in self.options.authors}
         urls = list(dict.fromkeys(normalize_tweet_url(url) for url in self.options.tweet_urls))
+        if self.proxy_url is not None:
+            self._check_stop()
+            check_proxy_available(self.proxy_url)
+            self.log('本輪搜尋、作者補抓、同作者留言與媒體下載使用 WARP 本機代理；代理失敗不會切回直連。')
         if self.source is None:
             from login_browser import validate_cookies
             if not self.options.cookie_file or not self.options.cookie_file.is_file():
                 raise ValueError("尚未儲存登入 Cookie。請先開啟瀏覽器登入 X，再儲存 Cookie 或匯入 cookies.txt。")
             validate_cookies(self.options.cookie_file)
-            self.source = GallerySource(self.options.cookie_file, self.log, self.stop_event)
+            self.source = GallerySource(self.options.cookie_file, self.log, self.stop_event,
+                                        proxy_url=self.proxy_url)
         self.options.output_dir.mkdir(parents=True, exist_ok=True)
         target_names = "、".join(f"#{tag}" for tag in self.tags)
-        self.log(f"目標標籤：{target_names}；所有來源都會逐篇核對，符合任一完整標籤才下載媒體。")
+        self.log(f"目標標籤：{target_names}；原貼文會逐篇核對，符合任一完整標籤才收集；同作者留言僅在明確開啟並通過串關聯驗證後例外補抓。")
+        if self.options.include_author_replies:
+            self.log('同作者留言補抓已開啟：僅從符合標籤的原貼文延伸，驗證同作者與回覆關聯；留言可不含標籤。日期與數量以符合標籤的起點計算。')
         try:
             with Store(self.options.database_path) as self.store:
                 if self.options.retry_failed:
                     for row in self.store.pending_media():
                         self._check_stop()
-                        if self._gate(row["metadata"]):
+                        seed_id = self._retry_seed(row)
+                        if seed_id:
                             try:
-                                self._accept_post(str(row["post_id"]))
+                                self._accept_post(seed_id)
                             except LimitReached:
                                 continue
-                            self._retry_posts.add(str(row["post_id"]))
+                            self._retry_posts.add(seed_id)
                             self._download(row)
                 if self.options.discover_authors:
                     authors.update(self.store.authors())
@@ -327,22 +408,24 @@ class DownloadEngine:
 
     def _collect(self, url: str, source_name: str):
         self._check_stop()
+        if (self.options.include_author_replies and hasattr(self.source, "iter_thread")
+                and "/status/" in url):
+            seed_id = _POST_PATH.fullmatch(urlparse(url).path)[1]
+            self._collect_thread(url, source_name, seed_id, known=seed_id in self._retry_posts)
+            return
         self.log(f"開始來源：{source_name}")
         count = 0
         try:
             for media_url, metadata in self.source.iter_media(url):
                 self._check_stop()
                 count += 1
-                post_id = str(metadata.get("tweet_id") or "")
-                if not post_id.isdigit():
-                    raise ValueError("來源缺少真實貼文編號；無法安全建立下載紀錄。")
-                author_data = metadata.get("author") or metadata.get("user") or {}
-                author = normalize_author(str(author_data.get("name") or author_data.get("screen_name") or ""))
+                context = post_context(metadata)
+                post_id, author = context["post_id"], context["author"]
                 tags = metadata_hashtags(metadata)
                 matched = self._gate(metadata)
-                self.store.record_post(post_id, author, str(metadata.get("content") or ""), tags, source_name, matched, str(metadata.get("date") or ""))
+                self.store.record_post(post_id, author, str(metadata.get("content") or ""), tags, source_name, matched, str(metadata.get("date") or ""), context=context)
                 if not matched:
-                    if post_id not in self._posts and post_id not in self._filtered:
+                    if post_id not in self._posts and post_id not in self._thread_posts and post_id not in self._filtered:
                         self._filtered.add(post_id)
                         self.result.filtered += 1
                     continue
@@ -351,19 +434,140 @@ class DownloadEngine:
                     self._filtered.remove(post_id)
                     self.result.filtered = len(self._filtered)
                 self._authors.add(author)
-                num = int(metadata.get("num") or 1)
-                if num < 1:
-                    raise ValueError("來源媒體序號無效。")
-                key = f"twitter:{post_id}:{num}"
-                target = self.options.output_dir / author if self.options.folder_by_user else self.options.output_dir
-                self.store.record_media(post_id, key, media_url, metadata, str(target))
-                self._download(self.store.media_state(key))
+                self._save_media(media_url, metadata, context)
+                if self.options.include_author_replies and hasattr(self.source, "iter_thread"):
+                    self._collect_thread(f"https://x.com/i/web/status/{post_id}",
+                                         "同作者留言補抓", post_id, known=True)
             if count == 0:
                 self.log(f"{source_name} 未返回媒體；這不代表 X 上沒有其他符合的作品。")
         except (Cancelled, LimitReached):
             raise
         except Exception as error:
             message = f"{source_name} 未完成：{type(error).__name__}: {str(error)[:400]}"
+            self.result.errors.append(message)
+            self.log(message)
+
+    def _save_media(self, media_url: str, metadata: dict, context: dict):
+        post_id, author = context["post_id"], context["author"]
+        num = int(metadata.get("num") or 1)
+        if num < 1:
+            raise ValueError("來源媒體序號無效。")
+        key = f"twitter:{post_id}:{num}"
+        target = self.options.output_dir / author if self.options.folder_by_user else self.options.output_dir
+        self.store.record_media(post_id, key, media_url, metadata, str(target))
+        self._download(self.store.media_state(key))
+
+    def _collect_thread(self, url: str, source_name: str, seed_id: str, *, known: bool):
+        if seed_id in self._thread_done:
+            return
+        self._check_stop()
+        seed = self._saved_seed(seed_id) if known else None
+        seed_context = seed["context"] if seed else None
+        if seed_context:
+            self._thread_done.add(seed_id)
+        deferred = []
+        incomplete = False
+        saw_seed = False
+        seed_rejected = False
+
+        def accept_reply(media_url, metadata, context):
+            self.store.record_post(context["post_id"], context["author"],
+                str(metadata.get("content") or ""), metadata_hashtags(metadata),
+                "同作者留言補抓", self._gate(metadata), str(metadata.get("date") or ""), context=context)
+            self.store.record_thread_context(seed_id, context)
+            self.store.record_thread_member(seed_id, context["post_id"])
+            self._thread_posts.add(context["post_id"])
+            self._filtered.discard(context["post_id"])
+            self.result.filtered = len(self._filtered)
+            self._save_media(media_url, metadata, context)
+
+        def drain():
+            if not seed_context:
+                return
+            remaining = []
+            for candidate_url, candidate_metadata, candidate_context in deferred:
+                self._check_stop()
+                if eligible_reply(seed_context, candidate_context,
+                        lambda parent: self.store.thread_context(seed_id, parent)):
+                    accept_reply(candidate_url, candidate_metadata, candidate_context)
+                elif reply_relation(seed_context, candidate_context,
+                        lambda parent: self.store.thread_context(seed_id, parent)) is None:
+                    remaining.append((candidate_url, candidate_metadata, candidate_context))
+            deferred[:] = remaining
+
+        try:
+            self.log(f"開始來源：{source_name}（貼文 {seed_id} 與同作者留言）")
+            for media_url, metadata in self.source.iter_thread(url):
+                self._check_stop()
+                try:
+                    context = post_context(metadata)
+                except ValueError:
+                    incomplete = True
+                    continue
+                if context["post_id"] == seed_id:
+                    saw_seed = True
+                    matched = self._gate(metadata)
+                    if not seed_context and not matched:
+                        # An unrelated or untagged URL cannot authorize replies.
+                        self._filtered.add(seed_id)
+                        self.result.filtered = len(self._filtered)
+                        seed_rejected = True
+                        deferred.clear()
+                        continue
+                    if seed_context and not same_author(seed_context, context):
+                        raise ValueError("討論串起點作者與已驗證紀錄不一致，已停止補抓。")
+                    self._accept_post(seed_id)
+                    self._thread_done.add(seed_id)
+                    seed_context = context
+                    seed_rejected = False
+                    self._authors.add(context["author"])
+                    self._filtered.discard(seed_id)
+                    self.result.filtered = len(self._filtered)
+                    self.store.record_post(seed_id, context["author"], str(metadata.get("content") or ""),
+                        metadata_hashtags(metadata), source_name, matched,
+                        str(metadata.get("date") or ""), context=context)
+                    self.store.record_thread_context(seed_id, context)
+                    if media_url:
+                        self._save_media(media_url, metadata, context)
+                    drain()
+                    continue
+                if seed_rejected:
+                    continue
+                if seed_context:
+                    self.store.record_thread_context(seed_id, context)
+                    drain()
+                if not media_url:
+                    continue
+                if (seed_context and eligible_reply(seed_context, context,
+                        lambda parent: self.store.thread_context(seed_id, parent))):
+                    accept_reply(media_url, metadata, context)
+                elif (not seed_context or (same_author(seed_context, context)
+                        and reply_relation(seed_context, context,
+                            lambda parent: self.store.thread_context(seed_id, parent)) is None)):
+                    if len(deferred) < MAX_DEFERRED_MEDIA:
+                        deferred.append((media_url, metadata, context))
+                    else:
+                        incomplete = True
+                elif (same_author(seed_context, context)
+                        and reply_relation(seed_context, context,
+                            lambda parent: self.store.thread_context(seed_id, parent)) is True):
+                    # Related media with missing or contradictory timestamps
+                    # cannot silently turn an unverified extraction into success.
+                    incomplete = True
+            drain()
+            if not saw_seed:
+                incomplete = True
+            if seed_context and (not seed_context.get("conversation_id") or context_date(seed_context) is None):
+                incomplete = True
+            if deferred or incomplete:
+                message = '同作者留言補抓未完整：部分貼文缺少可驗證的回覆關聯或超過暫存上限，已安全略過；可稍後重試。'
+                self.result.errors.append(message)
+                self.log(message)
+        except (Cancelled, LimitReached):
+            raise
+        except Exception as error:
+            # Do not expose upstream URLs, account headers or cookie payloads.
+            message = f'同作者留言補抓未完成（{type(error).__name__}）；請檢查登入或網路後重試。'
             self.result.errors.append(message)
             self.log(message)
 
@@ -387,8 +591,9 @@ class DownloadEngine:
                 raise ValueError("檔案內容與下載紀錄不同。")
             except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):
                 self.store.mark_failed(key, "原檔案遺失或驗證失敗，重新下載。")
-        parsed = urlparse(media_url)
-        if parsed.scheme != "https" or not parsed.hostname or not parsed.hostname.endswith(".twimg.com"):
+        try:
+            _validated_media_url(media_url)
+        except ValueError:
             self._failure(key, "來源不是支援的 X 媒體直連。")
             return
         target_dir = Path(row["target_dir"])
@@ -399,20 +604,20 @@ class DownloadEngine:
             temporary = None
             try:
                 self._check_stop()
-                with self.session.get(media_url, stream=True, timeout=(10, 15), headers={"Referer": "https://x.com/", "Accept-Encoding": "identity"}) as response:
-                    response.raise_for_status()
-                    final_host = urlparse(response.url).hostname or ""
-                    if not final_host.endswith(".twimg.com"):
-                        raise ValueError("媒體下載被重新導向至非 X 媒體來源。")
+                with _media_response(self.session, media_url) as response:
                     expected = response.headers.get("Content-Length")
+                    if expected and (not expected.isdigit() or int(expected) > MAX_MEDIA_BYTES):
+                        raise ValueError('媒體檔案大小無效或超過 1 GiB 安全限制。')
                     written = 0
                     with tempfile.NamedTemporaryFile(dir=target_dir, prefix="." + file_name + ".", suffix=".part", delete=False) as stream:
                         temporary = Path(stream.name)
                         for chunk in response.iter_content(128 * 1024):
                             self._check_stop()
                             if chunk:
-                                stream.write(chunk)
                                 written += len(chunk)
+                                if written > MAX_MEDIA_BYTES:
+                                    raise ValueError('媒體檔案超過 1 GiB 安全限制。')
+                                stream.write(chunk)
                         stream.flush()
                         os.fsync(stream.fileno())
                     if expected and written != int(expected):

@@ -13,6 +13,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 import main
+from locale_fixture import traditional_chinese_system
 
 
 class ProductFlowTests(unittest.TestCase):
@@ -22,6 +23,7 @@ class ProductFlowTests(unittest.TestCase):
         cls.app.setQuitOnLastWindowClosed(False)
 
     def setUp(self):
+        traditional_chinese_system(self)
         self.temporary = tempfile.TemporaryDirectory(dir=Path(__file__).parent)
         self.root = Path(self.temporary.name)
         self.window = None

@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import QApplication, QDialog, QWidget
 
 import author_dialog
 from ui_design import theme_colors
+import i18n
 
 
 class AuthorDialogTests(unittest.TestCase):
@@ -25,6 +26,13 @@ class AuthorDialogTests(unittest.TestCase):
         cls.app.setQuitOnLastWindowClosed(False)
 
     def setUp(self):
+        previous_language = i18n.language_mode()
+        i18n.set_language("zh_TW")
+        i18n.install_qt_translator(self.app)
+        def restore_language():
+            i18n.set_language(previous_language)
+            i18n.install_qt_translator(self.app)
+        self.addCleanup(restore_language)
         self.dialogs = []
         root = Path(__file__).resolve().parents[1]
         self.image_patch = patch.object(author_dialog, "get_author_image_path", return_value=str(root / "assets" / "author.png"))
@@ -74,6 +82,33 @@ class AuthorDialogTests(unittest.TestCase):
         self.assertEqual(self.make_dialog(parent).theme_mode, "dark")
         self.assertEqual(self.make_dialog(parent, theme="light").theme_mode, "light")
         self.assertEqual(self.make_dialog().theme_mode, "light")
+
+    def test_live_language_switch_preserves_author_links_theme_and_scroll_without_opening_links(self):
+        dialog = self.make_dialog(theme="dark")
+        dialog.resize(500, 460)
+        self.app.processEvents()
+        original_urls = [url for _, _, url in dialog._links]
+        with patch.object(author_dialog.QDesktopServices, "openUrl") as opened:
+            for language in ("en", "zh_CN", "ja", "ko", "zh_TW", "en"):
+                with self.subTest(language=language):
+                    i18n.set_language(language)
+                    i18n.install_qt_translator(self.app)
+                    position = min(30, dialog.scroll_area.verticalScrollBar().maximum())
+                    dialog.scroll_area.verticalScrollBar().setValue(position)
+                    dialog.retranslate_ui()
+                    self.app.processEvents()
+                    self.assertEqual(dialog.windowTitle(), i18n.tr("作者資訊"))
+                    self.assertEqual(dialog.biography_label.text(), i18n.tr(author_dialog.BIOGRAPHY))
+                    self.assertEqual(dialog.close_button.text(), i18n.tr("關閉"))
+                    self.assertEqual(dialog.theme_mode, "dark")
+                    self.assertEqual(dialog.scroll_area.verticalScrollBar().value(), min(position, dialog.scroll_area.verticalScrollBar().maximum()))
+                    self.assertEqual([url for _, _, url in dialog._links], original_urls)
+                    for label, source, url in dialog._links:
+                        self.assertIn(url, label.text())
+                        self.assertEqual(label.accessibleName(), i18n.tr("開啟{label}", label=i18n.tr(source)))
+                    if language != "zh_TW":
+                        self.assertNotEqual(dialog.biography_label.text(), author_dialog.BIOGRAPHY)
+            opened.assert_not_called()
 
     def test_both_themes_explicitly_color_dialog_text_links_and_close_button(self):
         for theme in ("light", "dark"):

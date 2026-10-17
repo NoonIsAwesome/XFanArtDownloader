@@ -14,7 +14,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "desktop"))
 import gallery_client as client
 
 SOURCE = "https://x.com/artist/media"
+TWEET = "https://x.com/artist/status/123"
 MEDIA = {"type": "metadata", "url": "https://pbs.twimg.com/media/fixture.png?name=orig", "metadata": {"tweet_id": "123", "hashtags": ["fanart"]}}
+POST = {"type": "post", "metadata": {"tweet_id": "123", "author": {"id": 10, "name": "artist"},
+        "reply_id": 0, "conversation_id": "123", "date": "2026-10-16T00:00:00", "hashtags": ["fanart"], "content": "fixture"}}
 
 
 class GalleryClientTests(unittest.TestCase):
@@ -31,10 +34,10 @@ class GalleryClientTests(unittest.TestCase):
     def tearDown(self):
         self.directory.cleanup()
 
-    def run_script(self, code):
+    def run_script(self, code, *, thread=False):
         self.script.write_text(code, encoding="utf-8")
         with patch.object(client.GallerySource, "_command", return_value=[sys.executable, str(self.script)]):
-            return list(self.source.iter_media(SOURCE))
+            return list(self.source.iter_thread(TWEET) if thread else self.source.iter_media(SOURCE))
 
     def records(self, *records, suffix=""):
         # repr is Python source quoting, not shell quoting: Popen has shell=False.
@@ -45,6 +48,42 @@ class GalleryClientTests(unittest.TestCase):
         rows = self.run_script(self.records({"type": "log", "message": "正在讀取來源"}, MEDIA, {"type": "done", "ok": True, "count": 1}))
         self.assertEqual(rows, [(MEDIA["url"], MEDIA["metadata"])])
         self.assertEqual(self.logs, ["正在讀取來源"])
+
+    def test_thread_post_context_and_media_roundtrip_with_explicit_cli_flag(self):
+        command_lines = []
+        real_popen = subprocess.Popen
+        def spawn(args, **kwargs):
+            command_lines.append(args)
+            return real_popen(args, **kwargs)
+        with patch.object(client.subprocess, "Popen", side_effect=spawn):
+            rows = self.run_script(self.records(POST, MEDIA, {"type": "done", "ok": True, "count": 2}), thread=True)
+        self.assertEqual(rows, [(None, POST["metadata"]), (MEDIA["url"], MEDIA["metadata"])])
+        self.assertEqual(command_lines[0][-5:], ["--url", TWEET, "--cookies", str(self.cookies.resolve()), "--conversation"])
+        self.assertNotIn("private fixture value", " ".join(command_lines[0]))
+
+    def test_thread_requires_tweet_source_before_spawning(self):
+        for value in (SOURCE, "https://x.com/search?q=%23fanart", "https://outside.example/artist/status/123"):
+            with self.subTest(value=value), patch.object(client.subprocess, "Popen") as popen, self.assertRaises(ValueError):
+                list(self.source.iter_thread(value))
+            popen.assert_not_called()
+
+    def test_post_records_are_rejected_outside_thread_mode(self):
+        with self.assertRaises(RuntimeError):
+            self.run_script(self.records(POST, {"type": "done", "ok": True, "count": 1}))
+
+    def test_thread_record_validation_and_completion_count_cover_post_context(self):
+        cases = (
+            self.records(POST, {"type": "done", "ok": True, "count": 0}),
+            self.records(POST),
+            self.records({**POST, "metadata": {"author": {"auth_token": "private"}}}, {"type": "done", "ok": True, "count": 1}),
+            self.records({**POST, "metadata": {"_private": "private"}}, {"type": "done", "ok": True, "count": 1}),
+            self.records({**POST, "metadata": {"value": float("nan")}}, {"type": "done", "ok": True, "count": 1}),
+            self.records({**POST, "metadata": []}, {"type": "done", "ok": True, "count": 1}),
+            self.records(POST, {**MEDIA, "url": "https://outside.example/image.png"}, {"type": "done", "ok": True, "count": 2}),
+        )
+        for code in cases:
+            with self.subTest(code=code), self.assertRaises(RuntimeError):
+                self.run_script(code, thread=True)
 
     def test_done_does_not_mask_nonzero_exit_or_missing_completion(self):
         cases = (
@@ -101,6 +140,35 @@ class GalleryClientTests(unittest.TestCase):
         with patch.object(client.subprocess, "Popen", side_effect=spawn):
             self.run_script(self.records({"type": "done", "ok": True, "count": 0}))
         self.assertEqual(command_lines[0][-4:], ["--url", SOURCE, "--cookies", str(self.cookies.resolve())])
+        self.assertNotIn("private fixture value", " ".join(command_lines[0]))
+
+    def test_proxy_choice_reaches_helper_as_only_a_local_endpoint(self):
+        command_lines = []
+        real_popen = subprocess.Popen
+        self.source = client.GallerySource(self.cookies, self.logs.append, self.event,
+                                           proxy_url='socks5h://127.0.0.1:40000')
+        def spawn(args, **kwargs):
+            command_lines.append(args)
+            return real_popen(args, **kwargs)
+        with patch.object(client.subprocess, 'Popen', side_effect=spawn):
+            self.run_script(self.records({'type':'done', 'ok':True, 'count':0}))
+        self.assertEqual(command_lines[0][-2:], ['--proxy', 'socks5h://127.0.0.1:40000'])
+        with self.assertRaises(ValueError):
+            client.GallerySource(self.cookies, self.logs.append, self.event, proxy_url='socks5h://remote.example:40000')
+
+    def test_thread_proxy_route_preserves_conversation_flag_and_cookie_path(self):
+        command_lines = []
+        real_popen = subprocess.Popen
+        self.source = client.GallerySource(self.cookies, self.logs.append, self.event,
+                                           proxy_url="socks5h://127.0.0.1:40000")
+        def spawn(args, **kwargs):
+            command_lines.append(args)
+            return real_popen(args, **kwargs)
+        with patch.object(client.subprocess, "Popen", side_effect=spawn):
+            rows = self.run_script(self.records(POST, MEDIA, {"type": "done", "ok": True, "count": 2}), thread=True)
+        self.assertEqual(rows, [(None, POST["metadata"]), (MEDIA["url"], MEDIA["metadata"])])
+        self.assertEqual(command_lines[0][-7:], ["--url", TWEET, "--cookies", str(self.cookies.resolve()),
+                                               "--proxy", "socks5h://127.0.0.1:40000", "--conversation"])
         self.assertNotIn("private fixture value", " ".join(command_lines[0]))
 
     def test_cancellation_ends_owned_helper_and_reader(self):

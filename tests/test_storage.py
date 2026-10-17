@@ -136,6 +136,43 @@ class StoreTests(unittest.TestCase):
         with Store(another_path) as other:
             self.assertEqual(other.authors(), ["contextuser"])
 
+    def test_version_one_migration_preserves_history_and_adds_thread_evidence(self):
+        legacy = Path(self.temp.name) / "legacy.sqlite3"
+        with sqlite3.connect(legacy) as db:
+            db.executescript("""CREATE TABLE posts (
+                post_id TEXT PRIMARY KEY, author TEXT NOT NULL, text TEXT NOT NULL DEFAULT '',
+                hashtags TEXT NOT NULL DEFAULT '[]', source TEXT NOT NULL,
+                sources TEXT NOT NULL DEFAULT '[]', matched INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT '', first_seen_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                INSERT INTO posts VALUES ('123','alice','original','["fanart"]','legacy','["legacy"]',1,'','before','before');
+                PRAGMA user_version = 1;""")
+        db.close()
+        with Store(legacy) as migrated:
+            post = migrated.post_state("123")
+            self.assertEqual((post["text"], post["hashtags"], post["context"]), ("original", ["fanart"], {}))
+            self.assertEqual(migrated._db.execute("PRAGMA user_version").fetchone()[0], 2)
+            context = {"post_id": "124", "author": "alice", "reply_id": "123"}
+            migrated.record_post("124", "alice", "reply", [], "thread", False, context=context)
+            migrated.record_thread_context("123", context)
+            migrated.record_thread_member("123", "124")
+        with Store(legacy) as reopened:
+            self.assertEqual(reopened.thread_roots("124"), ["123"])
+            self.assertEqual(reopened.thread_context("123", "124"), context)
+            self.assertEqual(reopened.post_state("124")["hashtags"], [])
+
+    def test_unknown_newer_schema_is_refused_without_mutating_version_or_rows(self):
+        future = Path(self.temp.name) / "future.sqlite3"
+        with sqlite3.connect(future) as db:
+            db.executescript("CREATE TABLE future_data (value TEXT); INSERT INTO future_data VALUES ('keep'); PRAGMA user_version = 99;")
+        db.close()
+        with self.assertRaisesRegex(RuntimeError, "版本較新"):
+            Store(future)
+        with sqlite3.connect(future) as db:
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 99)
+            self.assertEqual(db.execute("SELECT value FROM future_data").fetchone()[0], "keep")
+            self.assertIsNone(db.execute("SELECT name FROM sqlite_master WHERE name = 'posts'").fetchone())
+        db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

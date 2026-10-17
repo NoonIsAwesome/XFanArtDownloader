@@ -1,8 +1,8 @@
 # UTF-8
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(2, 3, 0, 0),
-    prodvers=(2, 3, 0, 0),
+    filevers=(2, 4, 0, 0),
+    prodvers=(2, 4, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x4,
@@ -18,12 +18,12 @@ VSVersionInfo(
           [
             StringStruct('CompanyName', 'Noon Is Awesome'),
             StringStruct('FileDescription', 'X FanArt Downloader'),
-            StringStruct('FileVersion', '2.3.0.0'),
+            StringStruct('FileVersion', '2.4.0.0'),
             StringStruct('InternalName', 'XFanArtDownloader'),
             StringStruct('LegalCopyright', 'Copyright (C) 2026 Noon Is Awesome. No rights reserved.'),
             StringStruct('OriginalFilename', 'XFanArtDownloader.exe'),
             StringStruct('ProductName', 'X FanArt Downloader'),
-            StringStruct('ProductVersion', '2.3.0.0'),
+            StringStruct('ProductVersion', '2.4.0.0'),
           ]
         )
       ]

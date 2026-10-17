@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 
 from resources_rc import get_author_image_path, get_icon_path
 from ui_design import apply_dialog_theme, theme_colors
+from i18n import tr, locale as ui_locale
 
 
 SOCIAL_LINKS = (
@@ -67,12 +68,14 @@ class AuthorInfoDialog(QDialog):
             theme if theme is not None else getattr(parent, "theme_mode", "light")
         )
         self.setObjectName("authorDialog")
-        self.setWindowTitle("作者資訊")
-        self.setAccessibleName("作者資訊：沐橙 Noon")
+        self.setProperty("i18nSkip", True)
+        self.setWindowTitle(tr("作者資訊"))
+        self.setAccessibleName(tr("作者資訊：沐橙 Noon"))
         self.setWindowIcon(QIcon(get_icon_path()))
         self.resize(620, 660)
         self.setMinimumSize(500, 460)
         self._links: list[tuple[QLabel, str, str]] = []
+        self._translated_labels: list[tuple[QLabel, str]] = []
         self._allowed_urls = {url for _, url in SOCIAL_LINKS + SUPPORT_LINKS + COLLABORATION_LINKS}
 
         layout = QVBoxLayout(self)
@@ -83,7 +86,7 @@ class AuthorInfoDialog(QDialog):
         header.setSpacing(18)
         self.avatar_label = QLabel()
         self.avatar_label.setObjectName("authorAvatar")
-        self.avatar_label.setAccessibleName("沐橙 Noon 作者頭像")
+        self.avatar_label.setAccessibleName(tr("沐橙 Noon 作者頭像"))
         self.avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.avatar_label.setFixedSize(88, 88)
         pixmap = QPixmap(get_author_image_path())
@@ -139,9 +142,9 @@ class AuthorInfoDialog(QDialog):
         footer = QHBoxLayout()
         footer.setContentsMargins(0, 0, 0, 0)
         footer.addStretch()
-        self.close_button = QPushButton("關閉")
+        self.close_button = QPushButton(tr("關閉"))
         self.close_button.setObjectName("authorClose")
-        self.close_button.setAccessibleName("關閉作者資訊")
+        self.close_button.setAccessibleName(tr("關閉作者資訊"))
         self.close_button.setMinimumSize(96, 36)
         self.close_button.clicked.connect(self.accept)
         footer.addWidget(self.close_button)
@@ -151,18 +154,19 @@ class AuthorInfoDialog(QDialog):
             self.setTabOrder(previous[0], current[0])
         self.setTabOrder(self._links[-1][0], self.close_button)
         self.apply_theme(self.theme_mode)
+        self.retranslate_ui()
 
     @staticmethod
     def _normalise_theme(theme: str) -> str:
         return "dark" if theme == "dark" else "light"
 
-    @staticmethod
-    def _text(text: str, role: str) -> QLabel:
-        label = QLabel(text)
+    def _text(self, text: str, role: str) -> QLabel:
+        label = QLabel(tr(text))
         label.setProperty("authorRole", role)
         label.setTextFormat(Qt.TextFormat.PlainText)
         label.setWordWrap(True)
         label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self._translated_labels.append((label, text))
         return label
 
     def _add_link_section(self, layout: QVBoxLayout, title: str, links: tuple) -> None:
@@ -182,7 +186,7 @@ class AuthorInfoDialog(QDialog):
             )
             label.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             label.setOpenExternalLinks(False)
-            label.setAccessibleName(f"開啟{text}")
+            label.setAccessibleName(tr("開啟{label}", label=tr(text)))
             label.setToolTip(url)
             label.setWordWrap(True)
             label.linkActivated.connect(self._open_link)
@@ -195,6 +199,31 @@ class AuthorInfoDialog(QDialog):
     def _open_link(self, url: str) -> None:
         if url in self._allowed_urls:
             QDesktopServices.openUrl(QUrl(url))
+
+    def retranslate_ui(self) -> None:
+        """Keep links, focus and scroll state while replacing visible language."""
+        position = self.scroll_area.verticalScrollBar().value()
+        self.setLocale(ui_locale())
+        self.setWindowTitle(tr("作者資訊"))
+        self.setAccessibleName(tr("作者資訊：沐橙 Noon"))
+        self.avatar_label.setAccessibleName(tr("沐橙 Noon 作者頭像"))
+        self.close_button.setText(tr("關閉"))
+        self.close_button.setAccessibleName(tr("關閉作者資訊"))
+        for label, source in self._translated_labels:
+            label.setText(tr(source))
+        self._render_links()
+        self.scroll_area.widget().layout().activate()
+        self.scroll_area.verticalScrollBar().setValue(position)
+
+    def _render_links(self) -> None:
+        colors = theme_colors(self.theme_mode)
+        for label, source, url in self._links:
+            text = tr(source)
+            label.setText(
+                f'<a href="{escape(url, quote=True)}" '
+                f'style="color:{colors["accent"]}; text-decoration:underline;">{escape(text)}</a>'
+            )
+            label.setAccessibleName(tr("開啟{label}", label=text))
 
     def apply_theme(self, theme: str) -> None:
         self.theme_mode = self._normalise_theme(theme)
@@ -222,8 +251,4 @@ class AuthorInfoDialog(QDialog):
             QPushButton#authorClose:pressed {{ background: {colors['accent_pressed']}; }}
             QPushButton#authorClose:focus {{ border: 2px solid {colors['ink']}; padding: 5px 13px; }}
         """)
-        for label, text, url in self._links:
-            label.setText(
-                f'<a href="{escape(url, quote=True)}" '
-                f'style="color:{colors["accent"]}; text-decoration:underline;">{escape(text)}</a>'
-            )
+        self._render_links()

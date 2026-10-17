@@ -113,6 +113,13 @@ Other runtime dependencies, retained with the executable(s) that actually use th
   https://github.com/psf/requests
   Preserve both LICENSE and NOTICE.
 
+  PySocks 1.7.1 — BSD-3-Clause
+  https://github.com/Anorov/PySocks
+  The installed METADATA says BSD; its LICENSE contains the three BSD conditions.
+  Copyright 2006 Dan-Haim. All rights reserved.
+  Preserve the complete original LICENSE, including conditions and disclaimer,
+  with every executable that includes this SOCKS client.
+
   certifi 2026.7.22 — MPL-2.0
   https://github.com/certifi/python-certifi
 
@@ -156,3 +163,19 @@ project is not their official product or an assertion of endorsement.
 Chrome and Edge are separately installed browsers. They are not supplied or
 relicensed by this project. Selenium, ChromeDriver, youtube-dl and yt-dlp are not
 required by the current login/download path.
+
+OPTIONAL NETWORK SERVICE AND TRANSLATIONS
+
+Cloudflare WARP is a separately installed optional service, not a bundled
+dependency or a product of this project. The App's opt-in SOCKS5 support does not
+change the license of WARP, imply Cloudflare endorsement, or guarantee anonymity
+or a speed improvement. The App changes only its collection requests, not the
+system DNS, proxy or WARP configuration; browser login uses the existing OS
+network configuration. A responding loopback SOCKS5 service is not proof of its
+provider's identity.
+
+Application UI catalogs are maintained with the desktop code in desktop/locales/
+and loaded by desktop/i18n.py. Qt's standard dialog translations remain Qt
+materials with their original licenses. UI translation does not confer rights
+over downloaded post text or media, and does not change the separate program
+licensing described above.

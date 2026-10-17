@@ -2,6 +2,19 @@
 from __future__ import annotations
 
 from PyQt6.QtGui import QColor, QFont, QPalette
+from i18n import effective_language
+
+
+def ui_font() -> QFont:
+    """Use installed native fonts for the chosen writing system, with fallbacks."""
+    preferred = {
+        "zh_TW": "Microsoft JhengHei UI", "zh_CN": "Microsoft YaHei UI",
+        "ja": "Yu Gothic UI", "ko": "Malgun Gothic", "en": "Segoe UI",
+    }.get(effective_language(), "Segoe UI")
+    font = QFont()
+    font.setFamilies(list(dict.fromkeys((preferred, "Segoe UI", "Microsoft JhengHei UI", "Microsoft YaHei UI", "Yu Gothic UI", "Malgun Gothic"))))
+    font.setPointSizeF(10)
+    return font
 
 
 PALETTES = {
@@ -78,6 +91,13 @@ def common_stylesheet(theme: str) -> str:
             border: 2px solid {c['accent']}; padding: 7px 9px; }}
         QLineEdit:disabled, QTextEdit:disabled, QDateEdit:disabled, QSpinBox:disabled {{
             color: {c['disabled_fg']}; background: {c['disabled_bg']}; border-color: {c['divider']}; }}
+        QComboBox {{ padding-right: 28px; }}
+        QComboBox:focus {{ padding-right: 27px; }}
+        QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: top right;
+            width: 24px; border: none; background: transparent; }}
+        QComboBox QAbstractItemView {{ background: {c['input']}; color: {c['ink']};
+            selection-background-color: {c['accent']}; selection-color: {c['accent_ink']};
+            border: 1px solid {c['border']}; outline: none; padding: 4px; }}
         QCheckBox {{ spacing: 9px; background: transparent; font-size: 14px; }}
         QCheckBox[role="source"] {{ font-size: 16px; font-weight: 600; }}
         QCheckBox:disabled {{ color: {c['disabled_fg']}; }}
@@ -129,10 +149,7 @@ def gallery_stylesheet(theme: str) -> str:
 def apply_dialog_theme(dialog, theme: str = "light"):
     c = theme_colors(theme)
     dialog.setObjectName("galleryDialog")
-    font = QFont()
-    font.setFamilies(["Microsoft JhengHei UI", "Segoe UI"])
-    font.setPointSizeF(10)
-    dialog.setFont(font)
+    dialog.setFont(ui_font())
     apply_palette(dialog, theme)
     dialog.setStyleSheet(common_stylesheet(theme) + f"""
         QDialog#galleryDialog, QFrame#galleryDialog {{ background: {c['window']}; color: {c['ink']}; }}

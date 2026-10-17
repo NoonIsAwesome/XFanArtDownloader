@@ -26,7 +26,7 @@ if errorlevel 1 goto failed
 if errorlevel 1 goto failed
 "%FANART_PYTHON%" -m pip check
 if errorlevel 1 goto failed
-"%FANART_PYTHON%" -c "import PyQt6.QtWidgets, PIL, websocket, requests"
+"%FANART_PYTHON%" -c "import PyQt6.QtWidgets, PIL, websocket, requests, socks"
 if errorlevel 1 goto failed
 "%FANART_PYTHON%" "%FANART_PROJECT_DIR%extractor\gallery_bridge.py" --smoke-test >nul
 if errorlevel 1 goto failed

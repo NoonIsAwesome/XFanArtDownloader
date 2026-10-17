@@ -44,6 +44,10 @@ class Store:
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(self.db_path, timeout=10)
         self._db.row_factory = sqlite3.Row
+        if self._db.execute("PRAGMA user_version").fetchone()[0] > 2:
+            self._db.close()
+            self._db = None
+            raise RuntimeError("下載資料庫版本較新，請使用新版 FanArt Downloader。")
         self._db.execute("PRAGMA busy_timeout = 10000")
         self._db.execute("PRAGMA foreign_keys = ON")
         self._db.execute("PRAGMA journal_mode = WAL")
@@ -90,9 +94,26 @@ class Store:
             );
             CREATE INDEX IF NOT EXISTS media_state_idx ON media(state);
             CREATE INDEX IF NOT EXISTS media_post_idx ON media(post_id);
-            PRAGMA user_version = 1;
             """
         )
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(posts)")}
+        if "context" not in columns:
+            self._db.execute("ALTER TABLE posts ADD COLUMN context TEXT NOT NULL DEFAULT '{}'")
+        self._db.executescript("""
+            CREATE TABLE IF NOT EXISTS thread_contexts (
+                seed_id TEXT NOT NULL REFERENCES posts(post_id),
+                post_id TEXT NOT NULL,
+                context TEXT NOT NULL,
+                PRIMARY KEY (seed_id, post_id)
+            );
+            CREATE TABLE IF NOT EXISTS thread_members (
+                seed_id TEXT NOT NULL REFERENCES posts(post_id),
+                post_id TEXT NOT NULL REFERENCES posts(post_id),
+                PRIMARY KEY (seed_id, post_id)
+            );
+            CREATE INDEX IF NOT EXISTS thread_member_post_idx ON thread_members(post_id);
+            PRAGMA user_version = 2;
+        """)
 
     @contextmanager
     def _transaction(self) -> Iterator[None]:
@@ -134,6 +155,7 @@ class Store:
         source: str,
         matched: bool,
         created_at: str = "",
+        *, context: dict | None = None,
     ) -> None:
         post_id = str(post_id)
         author = _username(author)
@@ -160,6 +182,37 @@ class Store:
                      int(bool(matched) or bool(old["matched"])),
                      str(created_at or old["created_at"]), now, post_id),
                 )
+            if context is not None:
+                self._db.execute("UPDATE posts SET context = ? WHERE post_id = ?", (_json(context), post_id))
+
+    def post_state(self, post_id: str) -> dict | None:
+        row = self._db.execute("SELECT * FROM posts WHERE post_id = ?", (str(post_id),)).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        for name in ("hashtags", "sources", "context"):
+            result[name] = json.loads(result[name])
+        return result
+
+    def record_thread_context(self, seed_id: str, context: dict) -> None:
+        with self._transaction():
+            self._db.execute("""INSERT INTO thread_contexts VALUES (?, ?, ?)
+                ON CONFLICT(seed_id, post_id) DO UPDATE SET context = excluded.context""",
+                (str(seed_id), str(context["post_id"]), _json(context)))
+
+    def thread_context(self, seed_id: str, post_id: str) -> dict | None:
+        row = self._db.execute("SELECT context FROM thread_contexts WHERE seed_id = ? AND post_id = ?",
+                               (str(seed_id), str(post_id))).fetchone()
+        return None if row is None else json.loads(row[0])
+
+    def record_thread_member(self, seed_id: str, post_id: str) -> None:
+        """Called only after the explicit thread collector verifies evidence."""
+        with self._transaction():
+            self._db.execute("INSERT OR IGNORE INTO thread_members VALUES (?, ?)", (str(seed_id), str(post_id)))
+
+    def thread_roots(self, post_id: str) -> list[str]:
+        return [row[0] for row in self._db.execute(
+            "SELECT seed_id FROM thread_members WHERE post_id = ? ORDER BY seed_id", (str(post_id),))]
 
     def record_media(
         self,

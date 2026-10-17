@@ -20,6 +20,7 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
 import main
+from locale_fixture import traditional_chinese_system
 import save_cookies as console_login
 
 
@@ -41,6 +42,7 @@ class LoginGuiTests(unittest.TestCase):
         cls.app.setQuitOnLastWindowClosed(False)
 
     def setUp(self):
+        traditional_chinese_system(self)
         self.directory = tempfile.TemporaryDirectory(dir=Path(__file__).parent)
         self.root = Path(self.directory.name)
         self.window = ObservedWindow(show_notice=False, base_dir=self.root)

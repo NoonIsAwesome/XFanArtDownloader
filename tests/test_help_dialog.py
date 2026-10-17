@@ -13,8 +13,9 @@ from PyQt6.QtGui import QDesktopServices, QFontDatabase, QPalette
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QCheckBox, QDialog, QLabel
 
-from help_dialog import UsageGuideDialog
+from help_dialog import CONNECTION_HELP_URL, PRIVACY, STEPS, UsageGuideDialog
 from ui_theme import theme_colors
+import i18n
 
 
 class UsageGuideDialogTests(unittest.TestCase):
@@ -30,6 +31,13 @@ class UsageGuideDialogTests(unittest.TestCase):
                     QFontDatabase.addApplicationFont(str(path))
 
     def setUp(self):
+        previous_language = i18n.language_mode()
+        i18n.set_language("zh_TW")
+        i18n.install_qt_translator(self.app)
+        def restore_language():
+            i18n.set_language(previous_language)
+            i18n.install_qt_translator(self.app)
+        self.addCleanup(restore_language)
         self.dialogs = []
 
     def tearDown(self):
@@ -53,7 +61,7 @@ class UsageGuideDialogTests(unittest.TestCase):
         self.assertIn("請自行填入", first)
         self.assertIn("任一", first)
         self.assertIn("OR", first)
-        self.assertIn("搜尋、作者補抓與貼文網址", first)
+        self.assertIn("搜尋、作者媒體頁與貼文網址的原貼文", first)
         authors = dialog.step_titles[2].text() + dialog.step_bodies[2].text()
         self.assertIn("留空", authors)
         self.assertIn("自動", authors)
@@ -159,6 +167,47 @@ class UsageGuideDialogTests(unittest.TestCase):
         process.assert_not_called()
         network.assert_not_called()
         opened.assert_not_called()
+
+    def test_slow_connection_advice_opens_only_the_official_link_after_an_explicit_action(self):
+        with patch.object(QDesktopServices, "openUrl", return_value=True) as opened:
+            dialog = self.make_dialog()
+            for url in ("file:///private", "https://example.com", CONNECTION_HELP_URL + "?redirect=other"):
+                dialog._open_connection_help(url)
+            opened.assert_not_called()
+            dialog.connection_help_button.click()
+        opened.assert_called_once()
+        self.assertEqual(opened.call_args.args[0].toString(), CONNECTION_HELP_URL)
+        for phrase in ("不會自動更改系統 DNS", "自行安裝官方 WARP", "Preferences", "Configure Proxy", "Local proxy",
+                       "40000", "登入瀏覽器沿用作業系統", "不會自動改為直接連線", "1.1.1.1", "WARP", "流量路徑",
+                       "不能保證", "不代表匿名", "紀錄會保留"):
+            self.assertIn(phrase, dialog.connection_label.text())
+        self.assertTrue(dialog.isVisible())
+
+    def test_initial_and_live_languages_use_original_keys_without_losing_scroll_or_theme(self):
+        dialog = self.make_dialog(theme="dark")
+        dialog.resize(600, 440)
+        self.app.processEvents()
+        for language in ("en", "ja", "ko", "zh_CN", "zh_TW", "en"):
+            with self.subTest(language=language):
+                i18n.set_language(language)
+                i18n.install_qt_translator(self.app)
+                position = min(60, dialog.scroll_area.verticalScrollBar().maximum())
+                dialog.scroll_area.verticalScrollBar().setValue(position)
+                dialog.retranslate_ui()
+                self.app.processEvents()
+                self.assertEqual(dialog.windowTitle(), i18n.tr("FanArt Downloader 使用說明"))
+                self.assertEqual(dialog.step_bodies[0].text(), i18n.tr(STEPS[0][1]))
+                self.assertEqual(dialog.privacy_label.text(), i18n.tr(PRIVACY))
+                self.assertEqual(dialog.close_button.text(), i18n.tr("關閉說明"))
+                self.assertEqual(dialog.theme_mode, "dark")
+                self.assertEqual(dialog.scroll_area.verticalScrollBar().value(), min(position, dialog.scroll_area.verticalScrollBar().maximum()))
+                self.assertEqual(dialog.locale().name(), i18n.locale().name())
+                if language != "zh_TW":
+                    self.assertNotEqual(dialog.step_bodies[0].text(), STEPS[0][1])
+                    self.assertNotEqual(dialog.privacy_label.text(), PRIVACY)
+                fresh = self.make_dialog(show=False)
+                self.assertEqual(fresh.step_bodies[0].text(), i18n.tr(STEPS[0][1]))
+                self.assertEqual(fresh.close_button.text(), i18n.tr("關閉說明"))
 
 
 if __name__ == "__main__":
