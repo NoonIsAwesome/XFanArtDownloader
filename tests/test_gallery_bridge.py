@@ -196,6 +196,35 @@ class GalleryBridgeTests(unittest.TestCase):
         self.assertNotIn(value, bridge.safe_error(RuntimeError(value)))
         self.assertNotIn(value, bridge.safe_error(ValueError(value)))
 
+    def test_error_categories_and_cli_records_are_allowlisted_without_raw_payload(self):
+        cases = ((RuntimeError("429 generated-secret"), "rate_limit"),
+                 (RuntimeError("403 generated-secret"), "login"),
+                 (RuntimeError("404 generated-secret"), "not_found"),
+                 (RuntimeError("redirect refused generated-secret"), "redirect"),
+                 (type("ReadTimeout", (Exception,), {})("generated-secret"), "timeout"),
+                 (type("ConnectionError", (Exception,), {})("generated-secret"), "network"),
+                 (ValueError("generated-secret"), "invalid_source"))
+        for error, code in cases:
+            self.assertEqual(bridge.error_code(error), code)
+            self.assertEqual(bridge.safe_error(error), bridge.ERROR_REASONS[code])
+            self.assertNotIn("generated-secret", bridge.safe_error(error))
+        cookie_file = self.root / "synthetic-cookies.txt"
+        cookie_file.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+        def failed(url):
+            raise RuntimeError("429 generated-secret")
+            yield
+        output = io.StringIO()
+        handlers = logging.getLogger().handlers[:]
+        try:
+            with patch.object(bridge, "GallerySource", return_value=SimpleNamespace(iter_thread=failed)), patch.object(bridge.signal, "signal"), redirect_stdout(output):
+                result = bridge.main(["--url", "https://x.com/artist/status/123", "--cookies", str(cookie_file), "--conversation"])
+        finally:
+            logging.getLogger().handlers[:] = handlers
+        rows = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(result, 1)
+        self.assertEqual(rows[0], {"type": "error", "code": "rate_limit", "message": bridge.ERROR_REASONS["rate_limit"]})
+        self.assertNotIn("generated-secret", output.getvalue())
+
     def test_invalid_sources_are_rejected_without_importing_other_extractors(self):
         for value in ("https://example.com/artist/media", "file:///private", "http://x.com/artist/media", "https://x.com/home", "https://x.com/artist/media#token"):
             with self.subTest(value=value), self.assertRaises(ValueError):

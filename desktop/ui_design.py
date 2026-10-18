@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 
-from PyQt6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QUrl
+from PyQt6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, QUrl
 from PyQt6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QProxyStyle, QPushButton,
@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 
 from ui_theme import apply_dialog_theme, apply_palette, gallery_stylesheet, theme_colors, ui_font
 from i18n import tr, language_mode
+from resources_rc import get_icon_path
 
 
 TEAL = "#176C68"
@@ -78,6 +79,65 @@ class HeaderHelpLabel(QLabel):
     def minimumSizeHint(self):
         hint = super().minimumSizeHint()
         return QSize(hint.width(), max(hint.height(), self.heightForWidth(self.width())))
+
+
+class ElidedLabel(QLabel):
+    """One-line public names/filenames; retain literal full text for accessibility."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.literal_text = ""
+        self.elide_mode = Qt.TextElideMode.ElideRight
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setProperty("i18nSkip", True)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def set_literal(self, text):
+        self.literal_text = text
+        self.setToolTip(text)
+        self.setAccessibleDescription(text)
+        self._elide()
+
+    def _elide(self):
+        self.setText(self.fontMetrics().elidedText(self.literal_text, self.elide_mode, max(1, self.contentsRect().width())))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._elide()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.FontChange and hasattr(self, "literal_text"):
+            self._elide()
+
+
+class PreviewLabel(QLabel):
+    def __init__(self):
+        super().__init__()
+        self._image = None
+        self._icon = None
+
+    def set_preview(self, image=None, icon=None):
+        self._image, self._icon = image, icon
+        self._render()
+
+    def _render(self):
+        if self._image is not None and not self._image.isNull():
+            pixmap = QPixmap.fromImage(self._image).scaled(
+                self.contentsRect().size() * 2, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            pixmap.setDevicePixelRatio(2)
+            self.setPixmap(pixmap)
+        elif self._icon is not None:
+            self.setPixmap(self._icon.pixmap(42, 42))
+        else:
+            self.clear()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._render()
 
 
 class GalleryControlStyle(QProxyStyle):
@@ -168,6 +228,22 @@ def line_icon(name: str, size: int = 20, color: str = TEAL) -> QIcon:
         painter.drawLine(QPointF(20, 21), QPointF(20, 16))
     elif name == "stop":
         painter.drawRoundedRect(QRectF(6, 6, 12, 12), 1.5, 1.5)
+    elif name == "video":
+        painter.drawRoundedRect(QRectF(3, 5, 13, 14), 2, 2)
+        path = QPainterPath(QPointF(16, 9))
+        path.lineTo(21, 6)
+        path.lineTo(21, 18)
+        path.lineTo(16, 15)
+        painter.drawPath(path)
+    elif name == "image":
+        painter.drawRoundedRect(QRectF(3, 3, 18, 18), 2, 2)
+        painter.drawEllipse(QRectF(6, 6, 4, 4))
+        path = QPainterPath(QPointF(4, 18))
+        path.lineTo(10, 12)
+        path.lineTo(14, 16)
+        path.lineTo(17, 13)
+        path.lineTo(20, 16)
+        painter.drawPath(path)
     elif name == "info":
         painter.drawEllipse(QRectF(3, 3, 18, 18))
         painter.drawLine(QPointF(12, 10.5), QPointF(12, 16.5))
@@ -260,11 +336,13 @@ def apply_gallery_theme(window, mode=None):
         if hasattr(window, attr):
             getattr(window, attr).setIcon(line_icon(name, color=colors[color]))
     for attr, icon, size, color in (
-        ("logo_mark", "gallery", 48, "accent"), ("log_tray", "tray", 52, "muted"),
+        ("log_tray", "tray", 52, "muted"),
         ("strict_info", "info", 20, "accent"),
     ):
         if hasattr(window, attr):
             getattr(window, attr).setPixmap(line_icon(icon, size, colors[color]).pixmap(QSize(size, size)))
+    if hasattr(window, "logo_mark"):
+        window.logo_mark.setPixmap(QIcon(get_icon_path()).pixmap(48, 48))
     for editor_attr in ("hashtag_input", "authors_input", "tweet_urls_input"):
         if hasattr(window, editor_attr):
             editor = getattr(window, editor_attr)
@@ -284,6 +362,8 @@ def apply_gallery_theme(window, mode=None):
             '<a href="https://noonisawesome.dev/" style="color:' + colors["accent"] + '">'
             + tr('試試超讚的歌回直播軟體') + '</a>'
         )
+    if hasattr(window, "refresh_current_media"):
+        window.refresh_current_media()
 
 
 def set_window_theme(window, mode):
@@ -337,7 +417,7 @@ def build_gallery_layout(window):
     header.setSpacing(14)
     brand_mark = QLabel()
     window.logo_mark = brand_mark
-    brand_mark.setPixmap(line_icon("gallery", 48).pixmap(QSize(48, 48)))
+    brand_mark.setPixmap(QIcon(get_icon_path()).pixmap(48, 48))
     brand_mark.setFixedSize(48, 48)
     header.addWidget(brand_mark)
     brand = QVBoxLayout()
@@ -382,6 +462,9 @@ def build_gallery_layout(window):
     window.language_combo.setAccessibleName(tr("介面語言"))
     window.language_combo.setToolTip(tr("選擇介面語言；系統選項會跟隨電腦設定。"))
     window.language_combo.setStyle(window._gallery_control_style)
+    window.language_label = _label("介面語言", "muted")
+    window.language_label.setBuddy(window.language_combo)
+    utilities.addWidget(window.language_label)
     utilities.addWidget(window.language_combo)
     utilities.addWidget(window.theme_btn)
     utilities.addWidget(window.help_btn)
@@ -562,11 +645,46 @@ def build_gallery_layout(window):
     sidebar.addWidget(destination)
     sidebar.addWidget(_rule())
     sidebar.addWidget(_label("下載紀錄", "field"))
+    window.current_media_row = QWidget()
+    current_row = QHBoxLayout(window.current_media_row)
+    current_row.setContentsMargins(0, 0, 0, 0)
+    current_row.setSpacing(10)
+    window.current_avatar_label = QLabel()
+    window.current_avatar_label.setFixedSize(40, 40)
+    window.current_avatar_label.setAccessibleName(tr("目前作者的頭像"))
+    current_row.addWidget(window.current_avatar_label)
+    current_text = QVBoxLayout()
+    current_text.setSpacing(2)
+    window.current_author_label = ElidedLabel()
+    window.current_file_label = ElidedLabel()
+    window.current_file_label.elide_mode = Qt.TextElideMode.ElideMiddle
+    window.current_file_label.setProperty("role", "muted")
+    current_text.addWidget(window.current_author_label)
+    current_text.addWidget(window.current_file_label)
+    current_row.addLayout(current_text, 1)
+    window.current_media_row.hide()
+    sidebar.addWidget(window.current_media_row)
+    window.current_preview_container = QWidget()
+    preview_layout = QVBoxLayout(window.current_preview_container)
+    preview_layout.setContentsMargins(0, 0, 0, 0)
+    preview_layout.setSpacing(5)
+    window.current_preview_caption = ElidedLabel()
+    window.current_preview_caption.elide_mode = Qt.TextElideMode.ElideMiddle
+    window.current_preview_caption.setProperty("role", "muted")
+    preview_layout.addWidget(window.current_preview_caption)
+    window.current_preview_label = PreviewLabel()
+    window.current_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    window.current_preview_label.setFixedHeight(144)
+    window.current_preview_label.setMinimumWidth(0)
+    window.current_preview_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+    preview_layout.addWidget(window.current_preview_label)
+    window.current_preview_container.hide()
+    sidebar.addWidget(window.current_preview_container)
     log = QWidget()
     log_layout = QGridLayout(log)
     log_layout.setContentsMargins(0, 0, 0, 0)
     window.status_box.setObjectName("downloadLog")
-    window.status_box.setMinimumHeight(160)
+    window.status_box.setMinimumHeight(100)
     log_layout.addWidget(window.status_box, 0, 0)
     empty = QWidget()
     empty.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -611,12 +729,13 @@ def build_gallery_layout(window):
     advanced_layout.setSpacing(11)
     advanced_layout.addWidget(window.folder_by_user_checkbox)
     count = QHBoxLayout()
-    window.limit_count_checkbox.setText(tr('限制本輪處理貼文數'))
-    window.limit_count_checkbox.setToolTip(tr('包含已下載且略過的貼文，避免重跑時超過預期範圍。'))
+    window.limit_count_checkbox.setText(tr("搜尋貼文上限"))
+    window.limit_count_checkbox.setToolTip(tr("只計算標籤搜尋符合條件的不同原貼文（含已下載）；作者、貼文網址、重試與同串補抓不受此上限限制。"))
     count.addWidget(window.limit_count_checkbox, 1)
     window.limit_count_input.setFixedWidth(76)
     count.addWidget(window.limit_count_input)
     advanced_layout.addLayout(count)
+    advanced_layout.addWidget(_label("搜尋達上限後仍會進行作者補抓；本輪總數可能超過上限。", "muted", wrap=True))
     date_row = QHBoxLayout()
     window.limit_date_checkbox.setText(tr('只處理此日期起的貼文'))
     date_row.addWidget(window.limit_date_checkbox, 1)

@@ -24,7 +24,7 @@ import requests
 from PIL import Image
 
 from storage import Store
-from gallery_client import Cancelled, GallerySource
+from gallery_client import Cancelled, GallerySource, GallerySourceError
 from network import check_proxy_available, configure_session, warp_proxy_url
 from thread_collection import (MAX_DEFERRED_MEDIA, context_date, eligible_reply, post_context,
                                reply_relation, same_author, same_context)
@@ -39,7 +39,7 @@ _POST_PATH = re.compile(r"/(?:[A-Za-z0-9_]{1,15}/status|i/(?:web/)?status)/(\d+)
 
 
 class LimitReached(Exception):
-    pass
+    """End the current tag search without stopping the author's media stage."""
 
 
 def _validated_media_url(value: str) -> str:
@@ -184,7 +184,7 @@ class DownloadOptions:
     search_enabled: bool = True
     discover_authors: bool = True
     folder_by_user: bool = True
-    limit_count: int | None = None
+    limit_count: int | None = None  # Unique matching seeds from tag searches only.
     since: date | None = None
     delay: bool = True
     retry_failed: bool = True
@@ -203,6 +203,7 @@ class RunResult:
     posts: int = 0
     errors: list[str] = field(default_factory=list)
     stopped: bool = False
+    search_posts: int = 0
 
 
 def _post_date(metadata: dict) -> datetime | None:
@@ -265,9 +266,10 @@ def validate_file(path: Path, extension: str) -> tuple[int, str]:
 
 
 class DownloadEngine:
-    def __init__(self, options: DownloadOptions, log=print, stop_event=None, *, source=None, session=None):
+    def __init__(self, options: DownloadOptions, log=print, stop_event=None, *, source=None, session=None, progress=None):
         self.options = options
         self.log = log
+        self.progress = progress
         self.stop_event = stop_event or threading.Event()
         self.source = source
         self.session = session or requests.Session()
@@ -276,6 +278,7 @@ class DownloadEngine:
         configure_session(self.session, self.proxy_url)
         self.result = RunResult()
         self._posts: set[str] = set()
+        self._search_posts: set[str] = set()
         self._filtered: set[str] = set()
         self._attempted: dict[str, str] = {}
         self._authors: set[str] = set()
@@ -283,11 +286,41 @@ class DownloadEngine:
         self._retry_posts: set[str] = set()
         self._thread_done: set[str] = set()
         self._thread_posts: set[str] = set()
+        self._thread_rate_limited = False
 
     def _failure(self, key: str, message: str):
         self.store.mark_failed(key, message)
         self._failed_media.add(key)
         self.result.failed = len(self._failed_media)
+
+    def _media_progress(self, state: str, row: dict, metadata: dict, file_name: str, destination: Path) -> str:
+        post = self.store.post_state(row["post_id"])
+        handle = str(post["author"] or "").lower()
+        if not _HANDLE.fullmatch(handle):
+            handle = ""
+        display_path = f"{handle}\\{file_name}" if self.options.folder_by_user and handle else file_name
+        if self.progress is None:
+            return display_path
+        # Only the actual tweet author supplies public presentation metadata.
+        author = metadata.get("author")
+        author = author if isinstance(author, dict) else {}
+        name = author.get("nick") or author.get("name")
+        name = name if isinstance(name, str) else handle
+        name = " ".join("".join(char for char in name if not unicodedata.category(char).startswith("C")).split())[:100]
+        avatar = author.get("profile_image")
+        avatar = avatar if isinstance(avatar, str) and len(avatar) <= 8192 else None
+        event = {"type": "media", "state": state, "author_handle": handle,
+                 "author_name": name or handle, "avatar_url": avatar,
+                 "filename": file_name, "display_path": display_path,
+                 "media_type": "video" if str(metadata.get("extension")).lower() == "mp4" else "image"}
+        if state == "downloaded":
+            event["path"] = str(destination.resolve())
+        try:
+            self.progress(event)
+        except Exception:
+            # Presentation callbacks must not change durable download outcomes.
+            pass
+        return display_path
 
     def _check_stop(self):
         if self.stop_event.is_set():
@@ -304,10 +337,20 @@ class DownloadEngine:
 
     def _accept_post(self, post_id: str):
         if post_id not in self._posts:
-            if self.options.limit_count and len(self._posts) >= self.options.limit_count:
-                raise LimitReached()
             self._posts.add(post_id)
             self.result.posts += 1
+
+    def _search_quota_full(self) -> bool:
+        return (self.options.limit_count is not None
+                and len(self._search_posts) >= self.options.limit_count)
+
+    def _accept_search_post(self, post_id: str):
+        # Search has its own quota, regardless of prior direct/retry discovery.
+        if post_id not in self._search_posts:
+            if self._search_quota_full():
+                raise LimitReached()
+            self._search_posts.add(post_id)
+            self.result.search_posts = len(self._search_posts)
 
     def _saved_seed(self, post_id: str) -> dict | None:
         row = self.store.post_state(post_id)
@@ -340,7 +383,7 @@ class DownloadEngine:
         self.tag = self.tags[0]  # Keep the original single-target attribute usable.
         self._target_tags = frozenset(self.tags)
         if self.options.limit_count is not None and self.options.limit_count < 1:
-            raise ValueError("推文數上限必須大於 0。")
+            raise ValueError("搜尋貼文配額必須大於 0。")
         authors = {normalize_author(author) for author in self.options.authors}
         urls = list(dict.fromkeys(normalize_tweet_url(url) for url in self.options.tweet_urls))
         if self.proxy_url is not None:
@@ -358,7 +401,7 @@ class DownloadEngine:
         target_names = "、".join(f"#{tag}" for tag in self.tags)
         self.log(f"目標標籤：{target_names}；原貼文會逐篇核對，符合任一完整標籤才收集；同作者留言僅在明確開啟並通過串關聯驗證後例外補抓。")
         if self.options.include_author_replies:
-            self.log('同作者留言補抓已開啟：僅從符合標籤的原貼文延伸，驗證同作者與回覆關聯；留言可不含標籤。日期與數量以符合標籤的起點計算。')
+            self.log('同作者留言補抓已開啟：僅從符合標籤的原貼文延伸，驗證同作者與回覆關聯；留言可不含標籤。日期以起點計算，搜尋配額不會截斷同串媒體。')
         try:
             with Store(self.options.database_path) as self.store:
                 if self.options.retry_failed:
@@ -366,28 +409,29 @@ class DownloadEngine:
                         self._check_stop()
                         seed_id = self._retry_seed(row)
                         if seed_id:
-                            try:
-                                self._accept_post(seed_id)
-                            except LimitReached:
-                                continue
+                            self._accept_post(seed_id)
                             self._retry_posts.add(seed_id)
                             self._download(row)
                 if self.options.discover_authors:
                     authors.update(self.store.authors())
-                # Refresh retry posts before a newer search result can consume
-                # the limit. This also renews expired media URLs and discovers
-                # every image of a post whose previous run was interrupted.
-                plans = [(f"https://x.com/i/web/status/{post_id}", "補抓貼文更新") for post_id in sorted(self._retry_posts)]
-                plans.extend((url, "貼文網址") for url in urls if url not in {item[0] for item in plans})
+                # Refresh expired URLs and every image of interrupted posts.
+                # Direct/retry/author sources never consume the search quota.
+                plans = [(f"https://x.com/i/web/status/{post_id}", "補抓貼文更新", False) for post_id in sorted(self._retry_posts)]
+                plans.extend((url, "貼文網址", False) for url in urls if url not in {item[0] for item in plans})
                 if self.options.search_enabled:
                     for tag in self.tags:
                         query = f"#{tag} filter:media"
                         if self.options.since:
                             # One day of overlap; the local Taiwan-date gate is authoritative.
                             query += " since:" + (self.options.since - timedelta(days=1)).isoformat()
-                        plans.append(("https://x.com/search?q=" + quote(query, safe="") + "&f=live", f"標籤搜尋 #{tag}"))
-                for url, source_name in plans:
-                    self._collect(url, source_name)
+                        plans.append(("https://x.com/search?q=" + quote(query, safe="") + "&f=live", f"標籤搜尋 #{tag}", True))
+                for url, source_name, search in plans:
+                    self._check_stop()
+                    if search and self._search_quota_full():
+                        continue
+                    self._collect(url, source_name, search=search)
+                if self._search_quota_full():
+                    self.log(f"已達本輪 {self.options.limit_count} 則搜尋貼文配額；接著繼續作者補抓，直接網址與重試也不受此配額限制。")
                 if self.options.discover_authors:
                     authors.update(self._authors)
                 for author in sorted(authors):
@@ -398,15 +442,13 @@ class DownloadEngine:
         except Cancelled:
             self.result.stopped = True
             self.log("已停止；尚未完成的媒體保留於資料庫，下次可重試。")
-        except LimitReached:
-            self.log(f"已達本輪 {self.options.limit_count} 則符合標籤的貼文上限。")
         finally:
             if self._owns_session:
                 self.session.close()
         self.log(f"本輪：{self.result.posts} 則符合貼文，下載 {self.result.downloaded}、已存在 {self.result.skipped}、失敗 {self.result.failed}、排除 {self.result.filtered} 則。")
         return self.result
 
-    def _collect(self, url: str, source_name: str):
+    def _collect(self, url: str, source_name: str, *, search: bool = False):
         self._check_stop()
         if (self.options.include_author_replies and hasattr(self.source, "iter_thread")
                 and "/status/" in url):
@@ -415,14 +457,18 @@ class DownloadEngine:
             return
         self.log(f"開始來源：{source_name}")
         count = 0
+        iterator = None
         try:
-            for media_url, metadata in self.source.iter_media(url):
+            iterator = self.source.iter_media(url)
+            for media_url, metadata in iterator:
                 self._check_stop()
                 count += 1
                 context = post_context(metadata)
                 post_id, author = context["post_id"], context["author"]
                 tags = metadata_hashtags(metadata)
                 matched = self._gate(metadata)
+                if matched and search:
+                    self._accept_search_post(post_id)
                 self.store.record_post(post_id, author, str(metadata.get("content") or ""), tags, source_name, matched, str(metadata.get("date") or ""), context=context)
                 if not matched:
                     if post_id not in self._posts and post_id not in self._thread_posts and post_id not in self._filtered:
@@ -440,12 +486,21 @@ class DownloadEngine:
                                          "同作者留言補抓", post_id, known=True)
             if count == 0:
                 self.log(f"{source_name} 未返回媒體；這不代表 X 上沒有其他符合的作品。")
-        except (Cancelled, LimitReached):
+        except Cancelled:
             raise
+        except LimitReached:
+            # Close only this search generator. Its last accepted seed has
+            # already yielded all media, and its thread was collected inline.
+            if not search:
+                raise
         except Exception as error:
+            self._check_stop()
             message = f"{source_name} 未完成：{type(error).__name__}: {str(error)[:400]}"
             self.result.errors.append(message)
             self.log(message)
+        finally:
+            if iterator is not None and hasattr(iterator, "close"):
+                iterator.close()
 
     def _save_media(self, media_url: str, metadata: dict, context: dict):
         post_id, author = context["post_id"], context["author"]
@@ -458,7 +513,7 @@ class DownloadEngine:
         self._download(self.store.media_state(key))
 
     def _collect_thread(self, url: str, source_name: str, seed_id: str, *, known: bool):
-        if seed_id in self._thread_done:
+        if self._thread_rate_limited or seed_id in self._thread_done:
             return
         self._check_stop()
         seed = self._saved_seed(seed_id) if known else None
@@ -565,7 +620,17 @@ class DownloadEngine:
                 self.log(message)
         except (Cancelled, LimitReached):
             raise
+        except GallerySourceError as error:
+            self._check_stop()
+            if error.code == "rate_limit":
+                self._thread_rate_limited = True
+                message = 'X 已限制討論串請求頻率；本輪暫停後續同作者留言補抓，搜尋與作者媒體仍會繼續。部分留言尚未完成，請稍後補抓。'
+            else:
+                message = f'同作者留言補抓未完成：{error.public_reason}'
+            self.result.errors.append(message)
+            self.log(message)
         except Exception as error:
+            self._check_stop()
             # Do not expose upstream URLs, account headers or cookie payloads.
             message = f'同作者留言補抓未完成（{type(error).__name__}）；請檢查登入或網路後重試。'
             self.result.errors.append(message)
@@ -600,6 +665,7 @@ class DownloadEngine:
         target_dir.mkdir(parents=True, exist_ok=True)
         file_name = f"{row['post_id']}_{int(metadata.get('num') or 1)}.{extension}"
         destination = target_dir / file_name
+        self._media_progress("downloading", row, metadata, file_name, destination)
         for attempt in range(3):
             temporary = None
             try:
@@ -630,7 +696,9 @@ class DownloadEngine:
                 self._failed_media.discard(key)
                 self.result.failed = len(self._failed_media)
                 self.result.downloaded += 1
-                self.log(f"已下載：{destination}")
+                icon = "🎬" if extension == "mp4" else "🖼️"
+                display_path = self._media_progress("downloaded", row, metadata, file_name, destination)
+                self.log(f"{icon} 已下載：{display_path}")
                 if self.options.delay and self.stop_event.wait(random.uniform(0.5, 1.5)):
                     raise Cancelled()
                 return

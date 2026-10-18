@@ -19,6 +19,7 @@ from downloader import (
     parse_hashtags,
 )
 from storage import Store
+from gallery_client import GallerySourceError, SOURCE_REASONS
 
 
 def png_bytes():
@@ -344,15 +345,152 @@ class EngineTests(unittest.TestCase):
         self.run_engine(Source([]), session, retry_failed=True)
         self.assertEqual(session.urls, [])
 
-    def test_retry_limit_refreshes_all_images_before_new_search_posts(self):
+    def test_retry_refreshes_all_images_without_consuming_search_quota(self):
         url, metadata = media()
         with Store(self.root / "state.sqlite3") as store:
             store.record_post("1001", "artista", "#noonle", ["noonle"], "搜尋", True)
             store.record_media("1001", "twitter:1001:1", url, metadata, str(self.root / "downloads"))
         source = Source(lambda url: [media(), media(num=2)] if "/status/1001" in url else [media("2000"), media(num=2)])
         result = self.run_engine(source, retry_failed=True, limit_count=1)
-        self.assertEqual((result.downloaded, result.posts), (2, 1))
+        self.assertEqual((result.downloaded, result.posts, result.search_posts), (3, 2, 1))
         self.assertIn("https://x.com/i/web/status/1001", source.urls)
+
+    def test_search_quota_closes_search_and_continues_discovered_manual_and_history_authors(self):
+        with Store(self.root / "state.sqlite3") as store:
+            store.record_author("History")
+        closed = []
+        def authored(post, author):
+            url, metadata = media(post)
+            metadata["author"]["name"] = author
+            return url, metadata
+        class ClosingSource(Source):
+            def iter_media(inner, url):
+                inner.urls.append(url)
+                try:
+                    if "/search?" in url:
+                        yield media(num=1)
+                        yield media(num=2)
+                        yield media("1002")
+                        self.fail("search must close at the next seed after its quota")
+                    else:
+                        self.assertEqual(len(closed), 1)
+                        if "/artista/" in url:
+                            yield media()
+                            yield media("2001")
+                            yield media("2002", tags=["other"])
+                        elif "/manual/" in url:
+                            yield authored("3001", "Manual")
+                        elif "/history/" in url:
+                            yield authored("4001", "History")
+                finally:
+                    if "/search?" in url:
+                        closed.append(url)
+        source = ClosingSource([])
+        result = self.run_engine(source, limit_count=1, authors=("MANUAL",), discover_authors=True,
+                                 hashtags=("noonle", "second"))
+        self.assertEqual((result.downloaded, result.posts, result.search_posts, result.errors), (5, 4, 1, []))
+        self.assertEqual(sum("/search?" in url for url in source.urls), 1)
+        self.assertEqual([url for url in source.urls if "/media" in url],
+                         ["https://x.com/artista/media", "https://x.com/history/media", "https://x.com/manual/media"])
+        with Store(self.root / "state.sqlite3") as store:
+            self.assertIsNone(store.media_state("twitter:1002:1"))
+            self.assertIsNone(store.media_state("twitter:2002:1"))
+        self.assertTrue(any("繼續作者補抓" in line for line in self.logs))
+
+    def test_direct_and_all_pending_retries_are_outside_quota_but_search_counts_them_once(self):
+        with Store(self.root / "state.sqlite3") as store:
+            for post in ("1001", "1002"):
+                url, metadata = media(post)
+                store.record_post(post, "artista", "#noonle", ["noonle"], "old", True)
+                store.record_media(post, f"twitter:{post}:1", url, metadata, str(self.root / "downloads"))
+                store.mark_failed(f"twitter:{post}:1", "offline")
+        def batch(url):
+            if "/search?" in url:
+                return [media(), media(num=2), media("1004")]
+            return [media(urlsplit(url).path.rsplit("/", 1)[1])]
+        source = Source(batch)
+        result = self.run_engine(source, limit_count=1, retry_failed=True,
+                                 tweet_urls=("https://x.com/artista/status/1003",))
+        self.assertEqual((result.downloaded, result.posts, result.search_posts), (4, 3, 1))
+        self.assertTrue(all(any(f"/status/{post}" in url for url in source.urls) for post in ("1001", "1002", "1003")))
+        with Store(self.root / "state.sqlite3") as store:
+            self.assertEqual(store.media_state("twitter:1002:1")["state"], "downloaded")
+            self.assertIsNone(store.media_state("twitter:1004:1"))
+
+    def test_existing_downloaded_seed_uses_search_quota_and_author_new_work_continues(self):
+        self.run_engine(Source([media()]))
+        source = Source(lambda url: [media(), media("1002")] if "/search?" in url
+                        else [media(), media("2001")])
+        result = self.run_engine(source, limit_count=1, discover_authors=True,
+                                 hashtags=("noonle", "second"))
+        self.assertEqual((result.search_posts, result.posts, result.downloaded, result.skipped), (1, 2, 1, 1))
+        self.assertEqual(sum("/search?" in url for url in source.urls), 1)
+
+    def test_tag_and_date_filtered_posts_do_not_consume_search_quota(self):
+        source = Source(lambda url: [media("1000", tags=["other"]),
+                        media("1009", when="2026-10-15T15:59:59Z"), media(), media(num=2), media("1002")]
+                        if "/search?" in url else [media("2001")])
+        result = self.run_engine(source, limit_count=1, authors=("artista",), since=date(2026, 10, 16))
+        self.assertEqual((result.search_posts, result.posts, result.downloaded, result.filtered), (1, 2, 3, 2))
+
+    def test_user_stop_still_stops_author_work_after_search_quota(self):
+        event = threading.Event()
+        class StopAuthor(Session):
+            def get(inner, url, **kwargs):
+                inner.urls.append(url)
+                return Response(url, inner.body, event if "2001_" in url else None)
+        source = Source(lambda url: [media(), media("1002")] if "/search?" in url
+                        else [media("2001")] if "/artista/" in url else [media("3001")])
+        result = DownloadEngine(self.options(limit_count=1, discover_authors=True, authors=("zmanual",)),
+            source=source, session=StopAuthor(), stop_event=event, log=self.logs.append).run()
+        self.assertEqual((result.stopped, result.search_posts, result.downloaded), (True, 1, 1))
+        self.assertNotIn("https://x.com/zmanual/media", source.urls)
+        with Store(self.root / "state.sqlite3") as store:
+            self.assertEqual(store.media_state("twitter:2001:1")["state"], "pending")
+
+    def test_short_image_log_and_progress_honor_folder_setting_and_never_preview_incomplete_file(self):
+        events = []
+        url, metadata = media()
+        metadata["author"].update(nick="Artist\x00 Name", profile_image="https://pbs.twimg.com/profile_images/90/avatar.jpg")
+        result = DownloadEngine(self.options(folder_by_user=False), source=Source([(url, metadata)]),
+            session=Session(), log=self.logs.append, progress=events.append).run()
+        self.assertEqual(result.downloaded, 1)
+        self.assertEqual([event["state"] for event in events], ["downloading", "downloaded"])
+        self.assertNotIn("path", events[0])
+        self.assertEqual(events[0]["author_handle"], "artista")
+        self.assertEqual(events[0]["author_name"], "Artist Name")
+        self.assertEqual(events[0]["avatar_url"], "https://pbs.twimg.com/profile_images/90/avatar.jpg")
+        self.assertEqual((events[1]["filename"], events[1]["display_path"], events[1]["media_type"]),
+                         ("1001_1.png", "1001_1.png", "image"))
+        self.assertEqual(Path(events[1]["path"]).read_bytes(), png_bytes())
+        success = [line for line in self.logs if line.startswith("🖼️")]
+        self.assertEqual(success, ["🖼️ 已下載：1001_1.png"])
+        self.assertNotIn(str(self.root), " ".join(self.logs))
+        events.clear()
+        second = DownloadEngine(self.options(folder_by_user=False), source=Source([(url, metadata)]),
+            session=Session(), log=self.logs.append, progress=events.append).run()
+        self.assertEqual((second.skipped, events), (1, []))
+
+    def test_progress_callback_failure_cannot_turn_completed_media_into_failure(self):
+        def broken_callback(event):
+            raise RuntimeError("generated UI error")
+        result = DownloadEngine(self.options(), source=Source([media()]), session=Session(),
+            log=self.logs.append, progress=broken_callback).run()
+        self.assertEqual((result.downloaded, result.failed), (1, 0))
+        self.assertIn("🖼️ 已下載：artista\\1001_1.png", self.logs)
+        with Store(self.root / "state.sqlite3") as store:
+            self.assertEqual(store.media_state("twitter:1001:1")["state"], "downloaded")
+
+    def test_failed_download_emits_no_completed_preview_or_timeline_avatar(self):
+        events = []
+        url, metadata = media()
+        metadata["user"] = {"name": "wrong", "profile_image": "https://pbs.twimg.com/profile_images/not-author.jpg"}
+        with patch("downloader.threading.Event.wait", return_value=False):
+            result = DownloadEngine(self.options(), source=Source([(url, metadata)]), session=Session(fail=True),
+                log=self.logs.append, progress=events.append).run()
+        self.assertEqual((result.failed, [event["state"] for event in events]), (1, ["downloading"]))
+        self.assertIsNone(events[0]["avatar_url"])
+        self.assertNotIn("path", events[0])
 
     def test_expired_url_can_be_refreshed_in_same_run_and_clear_failure(self):
         old_url, metadata = media()
@@ -587,9 +725,14 @@ class ThreadEngineTests(unittest.TestCase):
             def get(self, url, **kwargs):
                 self.urls.append(url)
                 return Response(url, video_bytes if "video.twimg.com" in url else self.body)
-        result = self.run_engine(ThreadSource([root], [root, (video_url, video)]), MixedSession())
+        events = []
+        result = DownloadEngine(self.options(), source=ThreadSource([root], [root, (video_url, video)]),
+            session=MixedSession(), log=self.logs.append, progress=events.append).run()
         self.assertEqual((result.downloaded, result.errors), (2, []))
         self.assertEqual(len(list((self.root / "downloads").rglob("*.mp4"))), 1)
+        self.assertIn("🎬 已下載：artista\\1002_1.mp4", self.logs)
+        self.assertEqual([event["media_type"] for event in events if event["state"] == "downloaded"],
+                         ["image", "video"])
 
     def test_unknown_ancestry_buffer_is_bounded_and_partial_is_visible(self):
         root = thread_item("200", parent="100", conversation="100", tags=["noonle"])
@@ -623,6 +766,44 @@ class ThreadEngineTests(unittest.TestCase):
         result = self.run_engine(ThreadSource([root], OSError("auth_token=generated-secret")))
         self.assertEqual((result.downloaded, len(result.errors)), (1, 1))
         self.assertNotIn("generated-secret", " ".join(result.errors + self.logs))
+
+    def test_typed_thread_reason_is_visible_without_upstream_exception_details(self):
+        root = thread_item(tags=["noonle"])
+        result = self.run_engine(ThreadSource([root], GallerySourceError("network")))
+        self.assertEqual(result.errors, ["同作者留言補抓未完成：" + SOURCE_REASONS["network"]])
+        self.assertNotIn("RuntimeError", " ".join(result.errors))
+
+    def test_rate_limit_warns_once_and_skips_only_thread_lookups_for_this_run(self):
+        roots = [thread_item(tags=["noonle"]),
+                 thread_item("1002", conversation="1002", tags=["noonle"])]
+        author_post = thread_item("1003", conversation="1003", tags=["noonle"])
+        source = ThreadSource(lambda url: roots if "/search?" in url else [author_post],
+                              GallerySourceError("rate_limit"))
+        result = self.run_engine(source, discover_authors=True)
+        self.assertEqual((result.posts, result.downloaded, len(result.errors)), (3, 3, 1))
+        self.assertEqual(len(source.thread_urls), 1)
+        self.assertIn("https://x.com/artista/media", source.urls)
+        self.assertIn("本輪暫停", result.errors[0])
+        self.assertEqual(sum("本輪暫停" in message for message in self.logs), 1)
+        root, child = roots[0], thread_item("1004", parent="1001")
+        next_source = ThreadSource([root], [root, child])
+        next_result = self.run_engine(next_source)
+        self.assertEqual((next_result.downloaded, next_result.errors, len(next_source.thread_urls)), (1, [], 1))
+
+    def test_stop_error_race_is_stopped_without_reporting_false_thread_failure(self):
+        root = thread_item(tags=["noonle"])
+        for stage in ("thread", "search"):
+            with self.subTest(stage=stage):
+                event = threading.Event()
+                def failed(url):
+                    event.set()
+                    raise GallerySourceError("network")
+                source = ThreadSource([root], failed) if stage == "thread" else Source(failed)
+                result = DownloadEngine(self.options(), source=source, session=Session(),
+                    log=self.logs.append, stop_event=event).run()
+                self.assertTrue(result.stopped)
+                self.assertEqual(result.errors, [])
+                self.assertFalse(any("補抓未完成" in line for line in self.logs))
 
 
 

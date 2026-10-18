@@ -33,7 +33,7 @@ STEPS = (
     (
         "選目錄，開始收集",
         "選好儲存目錄後按「開始收集」。要中止時按「停止」，等待目前連線結束；紀錄會保留供之後補抓。\n"
-        "進階設定可限制起始日期（台灣時間）與本輪貼文數，數量包含已下載者。"
+        "進階設定可設起始日期（台灣時間）與「搜尋貼文上限」；達搜尋上限後仍會繼續作者補抓。"
         "X 搜尋與可見範圍有限，無法保證收齊。",
     ),
 )
@@ -50,6 +50,21 @@ THREAD_HELP = (
     "其他作者、引用貼文及無法確認關聯的媒體不會因這個選項而下載。"
     "這個例外只用於該討論串，作者媒體頁的其他作品仍逐篇檢查標籤。"
     "X 可能隱藏或限制部分留言，無法保證收齊。"
+    "遇到 X 限制討論串請求頻率時，本輪會暫停後續留言補抓，搜尋與作者媒體仍會繼續；"
+    "未完成的留言可稍後重試。"
+)
+SEARCH_LIMIT_HELP = (
+    "「搜尋貼文上限」只計算所有標籤搜尋共用、不重複且符合標籤與日期的原貼文，包含已下載者。"
+    "達上限只停止標籤搜尋，作者媒體補抓仍繼續。\n"
+    "貼文網址、失敗重試、作者媒體頁與同作者留言附件不占搜尋配額；"
+    "總處理貼文數與媒體下載數可能超過搜尋上限。作者媒體頁仍逐篇核對標籤與日期，"
+    "這個設定不代表已收齊作品。"
+)
+PREVIEW_HELP = (
+    "目前作者的公開頭像請求不帶登入 Cookie；讀取失敗會顯示替代圖，不影響下載。"
+    "圖片預覽只讀已完成的本機下載，不會重新下載或上傳；影片不會自動播放。\n"
+    "紀錄中的 🖼️／🎬 分別表示圖片與影片。啟用作者資料夾時，簡短路徑顯示「作者帳號\\檔名」；"
+    "關閉時只顯示檔名。"
 )
 CONNECTION_HELP = (
     "X 載入或下載較慢時，可選用 WARP 本機代理；一般連線正常時不需要開啟。\n"
@@ -159,6 +174,22 @@ class UsageGuideDialog(QDialog):
         thread_help.addWidget(self.thread_title)
         thread_help.addWidget(self.thread_label)
         body.addLayout(thread_help)
+
+        search_limit = QVBoxLayout()
+        search_limit.setSpacing(6)
+        self.search_limit_title = self._label("搜尋貼文上限的範圍", "usageGuideSearchLimitTitle", "stepTitle")
+        self.search_limit_label = self._label(SEARCH_LIMIT_HELP, "usageGuideSearchLimit", "body")
+        search_limit.addWidget(self.search_limit_title)
+        search_limit.addWidget(self.search_limit_label)
+        body.addLayout(search_limit)
+
+        preview_help = QVBoxLayout()
+        preview_help.setSpacing(6)
+        self.preview_title = self._label("作者與本機預覽", "usageGuidePreviewTitle", "stepTitle")
+        self.preview_label = self._label(PREVIEW_HELP, "usageGuidePreview", "body")
+        preview_help.addWidget(self.preview_title)
+        preview_help.addWidget(self.preview_label)
+        body.addLayout(preview_help)
 
         connection = QVBoxLayout()
         connection.setSpacing(6)

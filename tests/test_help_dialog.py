@@ -13,7 +13,7 @@ from PyQt6.QtGui import QDesktopServices, QFontDatabase, QPalette
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QCheckBox, QDialog, QLabel
 
-from help_dialog import CONNECTION_HELP_URL, PRIVACY, STEPS, UsageGuideDialog
+from help_dialog import CONNECTION_HELP_URL, PREVIEW_HELP, PRIVACY, SEARCH_LIMIT_HELP, STEPS, UsageGuideDialog
 from ui_theme import theme_colors
 import i18n
 
@@ -96,9 +96,21 @@ class UsageGuideDialogTests(unittest.TestCase):
     def test_directory_stop_retained_history_and_advanced_limits_are_explained(self):
         dialog = self.make_dialog()
         text = dialog.step_bodies[3].text()
-        for required in ("儲存目錄", "開始收集", "停止", "紀錄會保留", "台灣時間", "貼文數", "包含已下載者", "無法保證收齊"):
+        for required in ("儲存目錄", "開始收集", "停止", "紀錄會保留", "台灣時間", "搜尋貼文上限", "繼續作者補抓", "無法保證收齊"):
             self.assertIn(required, text)
         self.assertIn("著作權屬原作者", dialog.copyright_label.text())
+
+    def test_search_quota_stops_only_search_and_explains_why_totals_can_exceed_it(self):
+        dialog = self.make_dialog()
+        text = dialog.search_limit_label.text()
+        self.assertIn("所有標籤搜尋共用", text)
+        self.assertIn("不重複", text)
+        self.assertIn("包含已下載者", text)
+        self.assertIn("達上限只停止標籤搜尋，作者媒體補抓仍繼續", text)
+        self.assertIn("貼文網址、失敗重試、作者媒體頁與同作者留言附件不占搜尋配額", text)
+        self.assertIn("總處理貼文數與媒體下載數可能超過搜尋上限", text)
+        self.assertIn("作者媒體頁仍逐篇核對標籤與日期", text)
+        self.assertIn("不代表已收齊", text)
 
     def test_themes_recolor_native_surfaces_text_and_primary_close_on_the_same_dialog(self):
         dialog = self.make_dialog()
@@ -133,7 +145,8 @@ class UsageGuideDialogTests(unittest.TestCase):
         center = dialog.close_button.mapTo(dialog, dialog.close_button.rect().center())
         self.assertTrue(dialog.rect().contains(center))
         for label in [*dialog.step_titles, *dialog.step_bodies, dialog.login_sequence_label,
-                      dialog.login_note_label, dialog.privacy_label, dialog.copyright_label]:
+                      dialog.login_note_label, dialog.thread_label, dialog.search_limit_label,
+                      dialog.preview_label, dialog.connection_label, dialog.privacy_label, dialog.copyright_label]:
             self.assertTrue(label.wordWrap())
             self.assertEqual(label.textFormat(), Qt.TextFormat.PlainText)
             self.assertGreaterEqual(label.height(), label.heightForWidth(label.width()))
@@ -198,6 +211,8 @@ class UsageGuideDialogTests(unittest.TestCase):
                 self.assertEqual(dialog.windowTitle(), i18n.tr("FanArt Downloader 使用說明"))
                 self.assertEqual(dialog.step_bodies[0].text(), i18n.tr(STEPS[0][1]))
                 self.assertEqual(dialog.privacy_label.text(), i18n.tr(PRIVACY))
+                self.assertEqual(dialog.search_limit_label.text(), i18n.tr(SEARCH_LIMIT_HELP))
+                self.assertEqual(dialog.preview_label.text(), i18n.tr(PREVIEW_HELP))
                 self.assertEqual(dialog.close_button.text(), i18n.tr("關閉說明"))
                 self.assertEqual(dialog.theme_mode, "dark")
                 self.assertEqual(dialog.scroll_area.verticalScrollBar().value(), min(position, dialog.scroll_area.verticalScrollBar().maximum()))
@@ -205,6 +220,8 @@ class UsageGuideDialogTests(unittest.TestCase):
                 if language != "zh_TW":
                     self.assertNotEqual(dialog.step_bodies[0].text(), STEPS[0][1])
                     self.assertNotEqual(dialog.privacy_label.text(), PRIVACY)
+                    self.assertNotEqual(dialog.search_limit_label.text(), SEARCH_LIMIT_HELP)
+                    self.assertNotEqual(dialog.preview_label.text(), PREVIEW_HELP)
                 fresh = self.make_dialog(show=False)
                 self.assertEqual(fresh.step_bodies[0].text(), i18n.tr(STEPS[0][1]))
                 self.assertEqual(fresh.close_button.text(), i18n.tr("關閉說明"))

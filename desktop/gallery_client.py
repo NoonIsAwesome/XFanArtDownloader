@@ -31,6 +31,35 @@ class Cancelled(Exception):
     pass
 
 
+SOURCE_REASONS = {
+    "source": "X 擷取未完整完成；請檢查登入或網路後重試。",
+    "cancelled": "擷取已停止。",
+    "rate_limit": "X 限制請求頻率；此來源未完整完成，請稍後重試。",
+    "login": "X 登入狀態無法使用；請重新登入並儲存後重試。",
+    "not_found": "X 來源目前無法讀取或已不存在。",
+    "file": "無法讀取本機登入檔案或啟動擷取工具；請檢查安裝與檔案權限。",
+    "invalid_source": "來源或擷取資料格式無效；僅支援 X 搜尋、作者媒體頁與貼文。",
+    "proxy": "無法使用本機代理；請檢查 WARP 的 Local proxy 與連接埠，此次未改用直連。",
+    "redirect": "X 來源要求重新導向，為保護登入資料已停止；請確認登入或稍後重試。",
+    "timeout": "擷取工具超過等待時間未回應；此來源未完整完成，請稍後重試。",
+    "network": "X 連線未完成；請檢查網路或稍後重試。",
+    "protocol": "擷取工具回傳無效或未允許的資料；此來源未完整完成，請重新安裝完整版本或稍後重試。",
+    "incomplete": "擷取工具提早結束或未完整完成；請查看來源紀錄後重試。",
+    "exit": "擷取工具異常結束；此來源未完整完成，請稍後重試。",
+    "startup": "找不到或無法啟動 gallery-dl-helper.exe；請檢查完整安裝後重試。",
+    "cookies": "尚未儲存本機登入資料，請先登入並儲存。",
+    "cleanup": "擷取工具尚未完全關閉；請稍候再重試。",
+}
+
+
+class GallerySourceError(RuntimeError):
+    """A fixed, public reason; upstream exception text never becomes UI copy."""
+    def __init__(self, code: str):
+        self.code = code if isinstance(code, str) and code in SOURCE_REASONS else "source"
+        self.public_reason = SOURCE_REASONS[self.code]
+        super().__init__(self.public_reason)
+
+
 def _source_url(value: str) -> str:
     try:
         parsed = urlsplit(value)
@@ -143,6 +172,14 @@ class GallerySource:
         self.stop_event = stop_event
         self.proxy_url = validate_proxy_url(proxy_url) if proxy_url is not None else None
 
+    def _check_stop(self):
+        if self.stop_event.is_set():
+            raise Cancelled()
+
+    def _fail(self, code: str):
+        self._check_stop()
+        raise GallerySourceError(code) from None
+
     @staticmethod
     def _command():
         if getattr(sys, "frozen", False):
@@ -152,10 +189,10 @@ class GallerySource:
                 helper = directory / "gallery-dl-helper.exe"
                 if helper.is_file():
                     return [str(helper)]
-            raise RuntimeError("找不到內附的 gallery-dl-helper.exe；請重新安裝完整的 App。")
+            raise GallerySourceError("startup")
         helper = Path(__file__).resolve().parents[1] / "extractor" / "gallery_bridge.py"
         if not helper.is_file():
-            raise RuntimeError("找不到 gallery_bridge.py；請重新安裝完整的原始碼。")
+            raise GallerySourceError("startup")
         return [sys.executable, str(helper)]
 
     @staticmethod
@@ -184,15 +221,18 @@ class GallerySource:
             push(("eof", None))
 
     def _records(self, url=None, *, smoke=False, conversation=False):
-        if self.stop_event.is_set():
-            raise Cancelled()
-        args = self._command()
+        self._check_stop()
+        try:
+            args = self._command()
+        except GallerySourceError:
+            self._check_stop()
+            raise
         if smoke:
             args += ["--smoke-test"]
         else:
             args += ["--url", (_thread_url if conversation else _source_url)(url)]
             if self.cookie_file is None:
-                raise RuntimeError("尚未儲存本機登入資料，請先登入並儲存。")
+                self._fail("cookies")
             args += ["--cookies", str(self.cookie_file.resolve())]
             if self.proxy_url is not None:
                 args += ['--proxy', self.proxy_url]
@@ -224,53 +264,63 @@ class GallerySource:
                 except queue.Empty:
                     limit = 3.0 if completed is not None else IDLE_TIMEOUT
                     if time.monotonic() - last_activity > limit:
-                        raise RuntimeError("擷取工具超過等待時間未回應；此來源未完整完成，請稍後重試。")
+                        self._fail("timeout")
                     continue
+                self._check_stop()
                 last_activity = time.monotonic()
                 if kind == "error":
-                    raise RuntimeError(value)
+                    self._fail("protocol")
                 if kind == "eof":
                     break
                 if completed is not None:
-                    raise RuntimeError("擷取工具在結束標記後仍回傳資料。")
+                    self._fail("protocol")
                 try:
                     record = json.loads(value.decode("utf-8"))
                 except (ValueError, UnicodeError, RecursionError):
-                    raise RuntimeError("擷取工具回傳無效的 JSON 資料。") from None
+                    self._fail("protocol")
                 if not isinstance(record, dict):
-                    raise RuntimeError("擷取工具回傳未預期的資料格式。")
+                    self._fail("protocol")
                 record_type = record.get("type")
                 if record_type == "error":
-                    raise RuntimeError(_safe_text(record.get("message")))
+                    code = record.get("code")
+                    if not isinstance(code, str) or code not in SOURCE_REASONS:
+                        # Older helpers emitted these exact fixed reasons. Only
+                        # exact allowlisted copy is recognized, never raw text.
+                        code = next((name for name, reason in SOURCE_REASONS.items()
+                                     if record.get("message") == reason), "source")
+                    self._fail(code)
                 if record_type == "log":
                     self.log(_safe_text(record.get("message")))
                 elif record_type == "metadata":
                     if not _media_url(record.get("url")) or not isinstance(record.get("metadata"), dict) or not _public_metadata(record["metadata"]):
-                        raise RuntimeError("擷取工具回傳未允許的媒體來源或私密欄位。")
+                        self._fail("protocol")
                     count += 1
                     yield record
                 elif record_type == "post":
                     if not conversation or not isinstance(record.get("metadata"), dict) or not _public_metadata(record["metadata"]):
-                        raise RuntimeError("擷取工具回傳未允許的貼文資料或私密欄位。")
+                        self._fail("protocol")
                     count += 1
                     yield record
                 elif record_type == "done":
-                    if record.get("ok") is not True or type(record.get("count")) is not int or record["count"] != count:
-                        raise RuntimeError("擷取工具未完整完成；請查看來源紀錄後重試。")
+                    if record.get("ok") is not True:
+                        self._fail("incomplete")
+                    if type(record.get("count")) is not int or record["count"] != count:
+                        self._fail("protocol")
                     completed = record
                 elif record_type != "log":
-                    raise RuntimeError("擷取工具回傳未知的資料類型。")
+                    self._fail("protocol")
             try:
                 returncode = process.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                raise RuntimeError("擷取工具沒有正常結束。") from None
+                self._fail("exit")
+            self._check_stop()
             if returncode != 0:
-                raise RuntimeError(f"擷取工具異常結束（代碼 {returncode}）；此來源未完整完成。")
+                self._fail("exit")
             if completed is None:
-                raise RuntimeError("擷取工具提早結束，未回報來源已完整完成。")
+                self._fail("incomplete")
             yield completed
         except OSError:
-            raise RuntimeError("無法啟動或管理獨立擷取工具，請檢查完整安裝後重試。") from None
+            self._fail("startup")
         finally:
             reader_stop.set()
             if guard is not None:
@@ -314,5 +364,5 @@ class GallerySource:
         records = list(source._records(smoke=True))
         names = records[-1].get("extractors") if records else None
         if not isinstance(names, list) or len(names) != 3 or set(names) != _EXTRACTORS:
-            raise RuntimeError("獨立擷取工具缺少 X 搜尋、作者媒體頁或貼文擷取器。")
+            raise GallerySourceError("protocol")
         return tuple(names)

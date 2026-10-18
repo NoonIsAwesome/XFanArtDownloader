@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from PyQt6.QtGui import QColor, QFont, QPalette
 from i18n import effective_language
+from focus_visibility import install_button_focus_visibility
 
 
 def ui_font() -> QFont:
@@ -48,6 +49,7 @@ def theme_colors(theme: str = "light") -> dict[str, str]:
 
 
 def apply_palette(widget, theme: str):
+    install_button_focus_visibility()
     c = theme_colors(theme)
     palette = QPalette()
     roles = {
@@ -106,7 +108,7 @@ def common_stylesheet(theme: str) -> str:
             border-radius: 7px; padding: 8px 14px; min-height: 20px; font-size: 14px; }}
         QPushButton:hover {{ background: {c['hover']}; border-color: {c['accent']}; }}
         QPushButton:pressed {{ background: {c['pressed']}; }}
-        QPushButton:focus {{ border: 2px solid {c['accent']}; padding: 7px 13px; }}
+        QPushButton[keyboardFocus="true"]:focus {{ border: 2px solid {c['accent']}; padding: 7px 13px; }}
         QPushButton[variant="primary"] {{ background: {c['accent']}; border-color: {c['accent']};
             color: {c['accent_ink']}; font-weight: 600; }}
         QPushButton[variant="primary"]:hover {{ background: {c['accent_hover']}; border-color: {c['accent_hover']}; }}
@@ -142,7 +144,7 @@ def gallery_stylesheet(theme: str) -> str:
         QToolButton#advancedToggle {{ color: {c['ink']}; border: none; background: transparent;
             text-align: left; padding: 8px 0px; font-size: 15px; }}
         QToolButton#advancedToggle:hover {{ color: {c['accent']}; }}
-        QToolButton#advancedToggle:focus {{ background: {c['accent_soft']}; }}
+        QToolButton#advancedToggle[keyboardFocus="true"]:focus {{ background: {c['accent_soft']}; }}
     """
 
 

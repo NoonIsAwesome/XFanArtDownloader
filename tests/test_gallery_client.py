@@ -123,6 +123,78 @@ class GalleryClientTests(unittest.TestCase):
             self.run_script(self.records({"type": "error", "message": "auth_token: private-token"}))
         self.assertNotIn("private-token", str(caught.exception))
 
+    def test_error_codes_choose_only_fixed_public_reasons_and_ignore_raw_messages(self):
+        for code in ("rate_limit", "login", "proxy", "redirect", "timeout", "network", "not-a-known-code"):
+            with self.subTest(code=code), self.assertRaises(client.GallerySourceError) as caught:
+                self.run_script(self.records({"type": "error", "code": code, "message": "unlabelled-generated-secret"}), thread=True)
+            expected = code if code in client.SOURCE_REASONS else "source"
+            self.assertEqual((caught.exception.code, caught.exception.public_reason),
+                             (expected, client.SOURCE_REASONS[expected]))
+            self.assertEqual(str(caught.exception), client.SOURCE_REASONS[expected])
+            self.assertNotIn("generated-secret", str(caught.exception))
+        with self.assertRaises(client.GallerySourceError) as old:
+            self.run_script(self.records({"type": "error", "message": client.SOURCE_REASONS["rate_limit"]}), thread=True)
+        self.assertEqual(old.exception.code, "rate_limit")
+
+    def test_stop_after_dequeue_or_before_failure_wins_over_queued_helper_error(self):
+        original_get = client.queue.Queue.get
+        original_loads = client.json.loads
+        for boundary in ("dequeue", "decode"):
+            with self.subTest(boundary=boundary):
+                self.event.clear()
+                def get(queue, *args, **kwargs):
+                    item = original_get(queue, *args, **kwargs)
+                    if boundary == "dequeue" and item[0] == "line":
+                        self.event.set()
+                    return item
+                def loads(*args, **kwargs):
+                    record = original_loads(*args, **kwargs)
+                    if boundary == "decode" and record.get("type") == "error":
+                        self.event.set()
+                    return record
+                with patch.object(client.queue.Queue, "get", new=get), patch.object(client.json, "loads", side_effect=loads), self.assertRaises(client.Cancelled):
+                    self.run_script(self.records({"type": "error", "code": "rate_limit", "message": "unused"}), thread=True)
+                self.assertFalse(any(t.name == "gallery-jsonl-reader" and t.is_alive() for t in threading.enumerate()))
+
+    def test_stop_after_owned_process_wait_wins_over_exit_failure(self):
+        real_popen = subprocess.Popen
+        def spawn(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            original_wait = process.wait
+            def wait(*args, **kwargs):
+                result = original_wait(*args, **kwargs)
+                self.event.set()
+                return result
+            process.wait = wait
+            return process
+        with patch.object(client.subprocess, "Popen", side_effect=spawn), self.assertRaises(client.Cancelled):
+            self.run_script(self.records({"type": "done", "ok": True, "count": 0}, suffix="sys.exit(9)\n"), thread=True)
+
+    def test_stop_then_restart_uses_fresh_process_queue_and_reader(self):
+        processes = []
+        real_popen = subprocess.Popen
+        def spawn(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+        with patch.object(client.subprocess, "Popen", side_effect=spawn):
+            self.script.write_text(self.records(POST, suffix="import time\ntime.sleep(60)\n"), encoding="utf-8")
+            with patch.object(client.GallerySource, "_command", return_value=[sys.executable, str(self.script)]):
+                iterator = self.source.iter_thread(TWEET)
+                self.assertEqual(next(iterator), (None, POST["metadata"]))
+                self.event.set()
+                with self.assertRaises(client.Cancelled):
+                    next(iterator)
+                iterator.close()
+            self.assertIsNotNone(processes[0].poll())
+            self.event.clear()
+            rows = self.run_script(self.records(POST, MEDIA, {"type": "done", "ok": True, "count": 2}), thread=True)
+            self.assertEqual(len(rows), 2)
+            self.source = client.GallerySource(self.cookies, self.logs.append, threading.Event())
+            self.assertEqual(len(self.run_script(self.records(POST, {"type": "done", "ok": True, "count": 1}), thread=True)), 1)
+        self.assertTrue(all(process.poll() is not None and process.stdout.closed for process in processes))
+        self.assertFalse(any(t.name == "gallery-jsonl-reader" and t.is_alive() for t in threading.enumerate()))
+
     def test_source_validation_rejects_external_urls_before_spawning(self):
         for value in ("https://example.com/artist/media", "http://x.com/artist/media", "https://x.com/home", "https://user:password@x.com/artist/media", "https://x.com:444/artist/media", "https://x.com/artist/media#secret"):
             with self.subTest(value=value), patch.object(client.subprocess, "Popen") as popen, self.assertRaises(ValueError):

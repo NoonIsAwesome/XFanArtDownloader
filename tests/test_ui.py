@@ -145,7 +145,7 @@ class UiTests(unittest.TestCase):
         self.window.hashtag_input.setText("#First，#Second")
 
         class Engine:
-            def __init__(self, options, log, stop_event):
+            def __init__(self, options, log, stop_event, progress=None):
                 self.options, self.log, self.stop_event = options, log, stop_event
                 calls.append(options)
 
@@ -190,7 +190,7 @@ class UiTests(unittest.TestCase):
         started = threading.Event()
 
         class Engine:
-            def __init__(self, options, log, stop_event):
+            def __init__(self, options, log, stop_event, progress=None):
                 self.stop_event = stop_event
 
             def run(self):

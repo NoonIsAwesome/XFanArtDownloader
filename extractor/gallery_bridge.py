@@ -133,28 +133,51 @@ def _json_metadata(metadata: dict) -> dict:
     return clean(metadata) if isinstance(metadata, dict) else {}
 
 
-def safe_error(error: Exception) -> str:
+ERROR_REASONS = {
+    "source": "X 擷取未完整完成；請檢查登入或網路後重試。",
+    "cancelled": "擷取已停止。",
+    "rate_limit": "X 限制請求頻率；此來源未完整完成，請稍後重試。",
+    "login": "X 登入狀態無法使用；請重新登入並儲存後重試。",
+    "not_found": "X 來源目前無法讀取或已不存在。",
+    "file": "無法讀取本機登入檔案或啟動擷取工具；請檢查安裝與檔案權限。",
+    "invalid_source": "來源或擷取資料格式無效；僅支援 X 搜尋、作者媒體頁與貼文。",
+    "proxy": "無法使用本機代理；請檢查 WARP 的 Local proxy 與連接埠，此次未改用直連。",
+    "redirect": "X 來源要求重新導向，為保護登入資料已停止；請確認登入或稍後重試。",
+    "timeout": "擷取工具超過等待時間未回應；此來源未完整完成，請稍後重試。",
+    "network": "X 連線未完成；請檢查網路或稍後重試。",
+}
+
+
+def error_code(error: Exception) -> str:
     # Never copy upstream exception/header text, even if it contains a cookie
     # value without an obvious field label. Classify, then return fixed copy.
     text = str(error).lower()
     name = type(error).__name__.lower()
     if isinstance(error, Cancelled):
-        return "擷取已停止。"
+        return "cancelled"
     if 'proxy' in name:
-        return '無法使用本機代理；請檢查 WARP 的 Local proxy 與連接埠，此次未改用直連。'
+        return "proxy"
     if 'redirect refused' in text:
-        return 'X 來源要求重新導向，為保護登入資料已停止；請確認登入或稍後重試。'
+        return "redirect"
     if "429" in text or "rate" in name or "rate limit" in text:
-        return "X 限制請求頻率；此來源未完整完成，請稍後重試。"
+        return "rate_limit"
     if any(token in name + " " + text for token in ("authentication", "authorization", "401", "403", "login", "cookie")):
-        return "X 登入狀態無法使用；請重新登入並儲存後重試。"
+        return "login"
     if "404" in text or "notfound" in name:
-        return "X 來源目前無法讀取或已不存在。"
+        return "not_found"
     if isinstance(error, (FileNotFoundError, PermissionError)):
-        return "無法讀取本機登入檔案或啟動擷取工具；請檢查安裝與檔案權限。"
+        return "file"
+    if "timeout" in name:
+        return "timeout"
+    if "connection" in name:
+        return "network"
     if isinstance(error, ValueError):
-        return "來源或擷取資料格式無效；僅支援 X 搜尋、作者媒體頁與貼文。"
-    return "X 擷取未完整完成；請檢查登入或網路後重試。"
+        return "invalid_source"
+    return "source"
+
+
+def safe_error(error: Exception) -> str:
+    return ERROR_REASONS[error_code(error)]
 
 
 class _GalleryLog(logging.Handler):
@@ -348,7 +371,8 @@ def main(argv=None) -> int:
         _emit({"type": "done", "ok": True, "count": count})
         return 0
     except Exception as error:
-        _emit({"type": "error", "message": safe_error(error)})
+        code = error_code(error)
+        _emit({"type": "error", "code": code, "message": ERROR_REASONS[code]})
         _emit({"type": "done", "ok": False, "count": count})
         return 1
 

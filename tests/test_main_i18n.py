@@ -131,7 +131,7 @@ class MainLanguageTests(unittest.TestCase):
         started = threading.Event()
 
         class Engine:
-            def __init__(engine, options, log, stop_event):
+            def __init__(engine, options, log, stop_event, progress=None):
                 engine.stop_event = stop_event
 
             def run(engine):
@@ -276,7 +276,12 @@ class MainLanguageTests(unittest.TestCase):
                 window.resize(1020, 740)
                 self.app.processEvents()
                 self.assertEqual(window.size().width(), 1020)
-                for widget in (window.language_combo, window.theme_btn, window.help_btn, window.about_btn,
+                self.assertEqual(window.language_label.text(), i18n.tr("介面語言"))
+                self.assertIs(window.language_label.buddy(), window.language_combo)
+                self.assertTrue(window.language_label.isVisible())
+                self.assertGreaterEqual(window.language_label.width(),
+                                        window.language_label.fontMetrics().horizontalAdvance(window.language_label.text()))
+                for widget in (window.language_label, window.language_combo, window.theme_btn, window.help_btn, window.about_btn,
                                window.cookie_btn, window.cookie_save_btn, window.cookie_import_btn,
                                window.download_btn, window.stop_btn):
                     position = widget.mapTo(window, QPoint())
@@ -303,6 +308,35 @@ class MainLanguageTests(unittest.TestCase):
                 checkbox.setFocus()
                 QTest.keyClick(checkbox, Qt.Key.Key_Space)
                 self.assertIs(checkbox.isChecked(), not before)
+
+    def test_current_author_preview_and_log_fit_short_window_after_layout_settles(self):
+        window = self.make_window()
+        window.show()
+        window._download_worker = object()
+        window.is_downloading = True
+        window.append_status("Offline current media fixture")
+        for language in ("zh_TW", "zh_CN", "en", "ja", "ko"):
+            with self.subTest(language=language):
+                self.choose(window, language)
+                window.resize(1020, 740)
+                self.app.processEvents()
+                window._media_progress(window._download_worker, {
+                    "type":"media", "state":"downloaded", "author_handle":"fixture_artist",
+                    "author_name":"A long public author name", "filename":"fixture.mp4",
+                    "display_path":"fixture_artist\\fixture.mp4", "media_type":"video",
+                })
+                viewport = window.sidebar_scroll.viewport()
+                visible = (window.current_media_row, window.current_preview_container, window.status_box)
+                self.wait_until(lambda: all(
+                    widget.mapTo(viewport, QPoint()).y() >= 0
+                    and widget.mapTo(viewport, QPoint()).y() + widget.height() <= viewport.height()
+                    for widget in visible))
+                for widget in visible:
+                    point = widget.mapTo(viewport, QPoint())
+                    self.assertGreaterEqual(point.y(), 0)
+                    self.assertLessEqual(point.y() + widget.height(), viewport.height())
+        window._download_worker = None
+        window.is_downloading = False
 
     def test_login_help_reserves_wrapped_height_when_language_and_window_width_change(self):
         window = self.make_window("ja")

@@ -8,11 +8,12 @@
 | --- | --- |
 | `desktop/main.py` | Qt 視窗控制、背景執行緒與停止／關閉協調 |
 | `desktop/ui_design.py`、`desktop/ui_theme.py`、`desktop/gallery_widgets.py` | 既有畫廊介面、明暗主題與原生日曆／提醒 |
+| `desktop/focus_visibility.py` | 區分滑鼠與鍵盤操作的按鈕焦點提示；保留 Qt 焦點、Tab 順序與原生啟用行為 |
 | `desktop/login_browser.py` | 普通瀏覽器登入、專用設定檔占用與程序擁有權驗證、X Cookie 安全儲存 |
 | `tools/save_cookies.py` | 相同登入流程的選用命令列入口 |
 | `desktop/gallery_client.py` | 啟動獨立下載解析器，讀取通用 JSONL 資料，管理取消／錯誤／子程序生命週期 |
 | `extractor/gallery_bridge.py` | 獨立 GPL-2.0-only 命令列程式，以 gallery-dl 解析 X 來源；不匯入 Qt 或 App |
-| `desktop/downloader.py` | 全來源完整標籤條件、日期／數量限制、媒體傳輸及內容驗證 |
+| `desktop/downloader.py` | 原貼文標籤與日期條件、獨立搜尋配額、媒體傳輸及內容驗證 |
 | `desktop/thread_collection.py` | 驗證同作者、討論串與祖先鏈；僅從符合標籤的原貼文延伸留言資格 |
 | `desktop/storage.py` | SQLite 歷史、重試與去重 |
 | `desktop/i18n.py`、`desktop/locales/` | 語言偵測、集中翻譯、Qt 標準控制項及同視窗重翻譯；不改使用者輸入 |
@@ -20,6 +21,8 @@
 | `desktop/resources_rc.py` | 從 `assets/` 或 PyInstaller 目錄取得圖片，無內嵌 Base64 或共用暫存圖片 |
 | `desktop/author_dialog.py` | 使用者主動開啟的作者資訊；關閉 App 不會強制顯示 |
 | `desktop/help_dialog.py` | 可重開的使用說明與首次引導，沿用主視窗主題 |
+| `desktop/author_avatar.py` | 非同步讀取公開作者頭像，驗證 CDN／路徑，限制流量、尺寸、時間與記憶體快取，不帶認證 |
+| `desktop/media_preview.py` | 執行緒池讀取已完成的本機圖片，驗證下載根目錄及檔案特徵，限制解碼量並捨棄過期結果 |
 | `desktop/driver_manager.py` | 舊版 ChromeDriver 的相容更新工具；新版下載與登入不依賴它 |
 | `packaging/` | 兩個獨立程序的 PyInstaller specs、版本資訊與資源清單 |
 
@@ -37,6 +40,8 @@ flowchart LR
 
 GUI 不匯入 `gallery_dl`，解析器不匯入 PyQt6。兩者以獨立程序運作，以標準輸入參數與 JSONL 交換公開貼文／媒體資料。完整 Cookie 值不出現在命令列、JSONL、紀錄或錯誤訊息。Qt 視窗不從背景執行緒直接更新；登入進度經 signal 傳回。
 
+解析器把來源錯誤分類為固定 allowlist code，控制端再次核對並對應固定原因文案，不把上游例外文字當介面訊息。討論串遇到 `rate_limit` 後，本輪暫停後續同作者留言請求，但仍執行搜尋與作者媒體來源，並留下部分未完成的回報；不能把暫停當作已收齊。
+
 原始碼入口為 `desktop/main.py`；控制端以獨立 Python 程序啟動 `extractor/gallery_bridge.py`。兩者仍以專案根目錄為本機 `data` 的位置。`tools/` 保留可選用的命令列入口，`tests/` 放離線測試，`assets/` 放普通圖片檔；各目錄不保存真人登入資料。
 
 ## 維護與擴充方式
@@ -48,8 +53,9 @@ GUI 不匯入 `gallery_dl`，解析器不匯入 PyQt6。兩者以獨立程序運
 | 畫面、主題或使用說明 | `desktop/ui_design.py`、`ui_theme.py`、`gallery_widgets.py`、`help_dialog.py` | `test_ui.py`、`test_gallery_widgets.py`、`test_help_dialog.py`；明暗主題與最小視窗 |
 | 文案或支援語言 | `desktop/i18n.py`、`desktop/locales/*.json` | `test_i18n.py`、`test_main_i18n.py`；保留格式參數、連結、使用者欄位及首次引導語言 |
 | WARP 或工作網路設定 | `desktop/network.py`；解析器自行驗證 CLI 輸入 | `test_network.py`、`test_gallery_client.py`、`test_gallery_bridge.py`；僅本機代理、代理 DNS、失敗不直連、不改全域設定 |
+| 目前作者、公開頭像與最近圖片 | `desktop/author_avatar.py`、`media_preview.py`，由 `main.py` 接收進度事件 | 合成圖片與假網路回覆；檢查來源、認證隔離、代理、大小上限、取消及過期結果；預覽不可讀取下載根目錄外的檔案 |
 | 登入或 Cookie 儲存 | `desktop/login_browser.py`；`main.py` 僅處理操作及進度 | `test_login_browser.py`、`test_login_gui.py`；另以全新測試設定檔跑 `tools/login_browser_smoke.py` |
-| 收集條件、日期、限額或補抓 | `desktop/downloader.py` 的 `DownloadOptions` 與 `DownloadEngine` | `test_downloader.py`；搜尋、作者、網址、重試都須通過相同完整標籤條件 |
+| 收集條件、日期、搜尋配額或補抓 | `desktop/downloader.py` 的 `DownloadOptions` 與 `DownloadEngine` | `test_downloader.py`；原貼文保持標籤／日期條件；搜尋達配額後仍執行作者補抓，其他來源不占搜尋配額 |
 | 同作者留言與繼承資格 | `desktop/thread_collection.py`、`downloader.py`、`storage.py` | 留言須有真實原貼文及回覆關聯證據；重試查 SQLite 關聯，不信任任意 metadata 聲稱的來源 |
 | X 擷取方式或 gallery-dl 更新 | `extractor/gallery_bridge.py`；協定變更時同步 `desktop/gallery_client.py` | `test_gallery_bridge.py`、`test_gallery_client.py`；檢查 JSONL 完整結束、錯誤及取消 |
 | 下載紀錄或資料庫欄位 | `desktop/storage.py` 的 `Store` | `test_storage.py`；以舊版合成資料庫驗證升級，不用真人歷史作 fixture |
@@ -62,6 +68,8 @@ GUI 不匯入 `gallery_dl`，解析器不匯入 PyQt6。兩者以獨立程序運
 語系設定儲存為 `system`、`zh_TW`、`zh_CN`、`en`、`ja` 或 `ko`。先讀語系才建立畫面與首次引導，切換時保留既有視窗、工作執行緒與欄位資料；Qt 自有按鈕／非原生選檔視窗另載入 `qtbase` 翻譯。新增文案用 `tr()` 與具名參數，四份 JSON 同步補齊；不要翻譯網址、標籤、作者帳號或下載內容。
 
 WARP 是使用者另行管理的可選外部服務。App 對每次工作的媒體 Session 與獨立解析器設定固定 `socks5h://127.0.0.1:連接埠`，解析器另行驗證同一輸入，不匯入 GUI 網路模組。明確啟用時停用環境代理覆寫，且不切回直連；未啟用則保留電腦既有代理／CA 支援。人工登入及本機 CDP 都不使用此下載代理設定。媒體下載也不讀取個人的 `.netrc` 帳密。
+
+下載引擎以不含 Cookie 的進度事件回報真正作者、公開頭像 URL、媒體類型及簡短路徑；只有成功提交的檔案才提供完整本機路徑供預覽。事件處理失敗不能改變下載完成狀態。頭像由 Qt Network 在 GUI 執行緒非同步處理，使用專用且拒收／拒送 Cookie 的 manager，不從下載器複製 header 或登入認證。每份工作選定的 WARP 路由也套用到該 manager；切換路由先取消既有請求。預覽解碼在 Qt 執行緒池處理，單次只跑一個並保留最新待處理請求，取消或結束後捨棄晚到的結果；工作執行緒不持有視窗。
 
 ## 登入的兩個階段
 
@@ -79,7 +87,9 @@ Hashtag 搜尋、作者媒體頁與貼文網址先核對原貼文是否含任一
 
 `iter_media()` 維持普通來源資料介面，`iter_thread()` 與解析器 `--conversation` 只處理貼文網址，可回傳無媒體的原貼文 context。串流處理保留有上限的待驗證資料，不緩衝整個討論串。SQLite schema v2 增加原貼文 context、討論串證據及已驗證 membership；舊版合成資料庫需升級測試，遇到未知較新版 schema 不可降版。失敗重試會重新查原貼文資格與 membership，不能憑媒體 metadata 自行宣稱 thread root。
 
-游標與資料分頁取代畫面滾動；X 未提供的內容仍可能遺漏。媒體成功傳輸並通過內容驗證後才寫為完成，重遇已有紀錄時核對檔案，遺失或不完整者可補抓。日期與貼文數以符合標籤的起點計算，符合資格的留言媒體不另消耗貼文名額。
+游標與資料分頁取代畫面滾動；X 未提供的內容仍可能遺漏。媒體成功傳輸並通過內容驗證後才寫為完成，重遇已有紀錄時核對檔案，遺失或不完整者可補抓。日期條件套用於符合標籤的原貼文起點，符合資格的同作者留言不另改用留言日期。
+
+`DownloadOptions.limit_count` 是**搜尋貼文上限**。所有標籤搜尋共用同一個去重集合，只計已通過標籤／日期條件的搜尋原貼文，包含檔案已存在者。搜尋遇到已由網址或重試處理的原貼文時，仍依搜尋集合判斷是否計入；不能用全域下載／處理集合替代搜尋計數。達搜尋配額只退出搜尋來源，接著繼續作者媒體補抓。作者頁、直接網址、失敗重試及討論串附件不消耗這個配額，因此 `RunResult.posts` 與媒體數可以大於搜尋上限；作者頁的原貼文仍經相同標籤與日期檢查。修改計數時須測多標籤重複、已下載者、搜尋達上限後作者繼續、非搜尋來源不耗配額，以及同一篇多媒體不截斷。
 
 Chrome 擴充版改用 Chrome downloads 與 IndexedDB；它的驗證能力和桌面版不同，不能把 Chrome 回報完成當成逐張解碼與 SHA256 驗證。
 
