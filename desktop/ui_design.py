@@ -723,32 +723,39 @@ def build_gallery_layout(window):
     sidebar.addWidget(_rule())
     sidebar.addWidget(_label("下載位置", "field"))
     destination = QFrame()
-    destination.setObjectName("destinationSurface")
     destination_row = QHBoxLayout(destination)
-    destination_row.setContentsMargins(10, 0, 0, 0)
+    destination_row.setContentsMargins(0, 0, 0, 0)
     destination_row.setSpacing(6)
+    # 路徑與操作分開排列；兩個資料夾按鈕共用尺寸與樣式，避免混合嵌入式和獨立式按鈕。
+    # Keep the path separate from two equally sized folder actions with a shared visual style.
+    path_surface = QFrame()
+    path_surface.setObjectName("destinationSurface")
+    path_surface.setMinimumHeight(42)
+    path_row = QHBoxLayout(path_surface)
+    path_row.setContentsMargins(10, 6, 10, 6)
     window.path_label.setTextFormat(Qt.TextFormat.PlainText)
     window.path_label.setProperty("i18nSkip", True)
     window.path_label.setWordWrap(True)
     window.path_label.setMinimumWidth(0)
     window.path_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
     window.path_label.setMaximumHeight(74)
-    destination_row.addWidget(window.path_label, 1)
-    window.choose_path_btn.setObjectName("chooseDestination")
+    path_row.addWidget(window.path_label)
+    destination_row.addWidget(path_surface, 1)
+    window.choose_path_btn.setProperty("role", "destinationAction")
     window.choose_path_btn.setText("")
     window.choose_path_btn.setIcon(line_icon("folder"))
     window.choose_path_btn.setAccessibleName(tr('選擇下載資料夾'))
     window.choose_path_btn.setToolTip(tr('選擇下載資料夾'))
-    window.choose_path_btn.setFixedWidth(42)
-    window.choose_path_btn.setMinimumHeight(42)
+    window.choose_path_btn.setFixedSize(42, 42)
     destination_row.addWidget(window.choose_path_btn)
     # 明確區分選擇位置與開啟位置；一般下載進行中仍可查看資料夾。
     # Separate choosing the destination from opening it; normal downloads can keep running.
-    window.open_download_folder_btn = QPushButton(tr("開啟"))
+    window.open_download_folder_btn = QPushButton()
+    window.open_download_folder_btn.setProperty("role", "destinationAction")
     window.open_download_folder_btn.setIcon(line_icon("folder-open"))
     window.open_download_folder_btn.setAccessibleName(tr("開啟下載資料夾"))
     window.open_download_folder_btn.setToolTip(tr("開啟下載資料夾"))
-    window.open_download_folder_btn.setMinimumHeight(42)
+    window.open_download_folder_btn.setFixedSize(42, 42)
     destination_row.addWidget(window.open_download_folder_btn)
     sidebar.addWidget(destination)
     sidebar.addWidget(_rule())
@@ -923,6 +930,7 @@ def build_gallery_layout(window):
         window.search_checkbox, window.author_media_checkbox,
         window.discover_authors_checkbox, window.authors_input,
         window.tweet_urls_input, window.cookie_btn, window.cookie_save_btn, window.cookie_import_btn, window.choose_path_btn,
+        window.open_download_folder_btn,
         window.advanced_toggle, window.folder_by_user_checkbox,
         window.limit_count_checkbox, window.limit_count_input,
         window.limit_date_checkbox, window.limit_date_input,

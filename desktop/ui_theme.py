@@ -196,9 +196,8 @@ def gallery_stylesheet(theme: str) -> str:
             padding:10px 20px; border-bottom:2px solid transparent; }}
         QTabWidget#mainTabs > QTabBar::tab:selected {{ background:{c['accent_soft']}; color:{c['accent_soft_ink']};
             border-bottom-color:{c['accent']}; }}
-        QPushButton#chooseDestination {{ border: none; border-left: 1px solid {c['border']}; border-radius: 0px; padding: 8px; }}
-        QPushButton#chooseDestination[keyboardFocus="true"]:focus {{ border: 2px solid {c['accent']};
-            background: {c['accent_soft']}; padding: 6px 6px 6px 7px; }}
+        QPushButton[role="destinationAction"] {{ padding: 8px; }}
+        QPushButton[role="destinationAction"][keyboardFocus="true"]:focus {{ padding: 7px; }}
         QToolButton#advancedToggle {{ color: {c['ink']}; border: none; background: transparent;
             text-align: left; padding: 8px 0px; font-size: 15px; }}
         QToolButton#advancedToggle:hover {{ color: {c['accent']}; }}
