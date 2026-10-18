@@ -2,6 +2,8 @@
 import os
 from pathlib import Path
 import sys
+import subprocess
+import textwrap
 import unittest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
@@ -66,14 +68,51 @@ class FocusVisibilityTests(unittest.TestCase):
         self.app.processEvents()
         self.assertTrue(self.second.hasFocus())
         self.assertTrue(self.second.property('keyboardFocus'))
-        self.assertFalse(self.first.property('keyboardFocus'))
+        self.assertFalse(self.first.hasFocus())
         activations = []
         self.second.clicked.connect(lambda: activations.append(True))
         QTest.keyClick(self.second, Qt.Key.Key_Space)
         self.assertEqual(activations, [True])
         self.assertTrue(self.second.property('keyboardFocus'))
         self.second.clearFocus()
-        self.assertFalse(self.second.property('keyboardFocus'))
+        self.assertFalse(self.second.hasFocus())
+
+    def test_focus_out_never_repolishes_a_closing_widget(self):
+        # The stylesheet combines the input-method property with :focus. It
+        # needs no property mutation while Qt is restoring/destroying focus.
+        from unittest.mock import patch
+        from PyQt6.QtGui import QFocusEvent
+        self.first.setFocus(Qt.FocusReason.TabFocusReason)
+        self.app.processEvents()
+        with patch.object(self.controller, '_set_ring') as set_ring:
+            self.controller.eventFilter(
+                self.first, QFocusEvent(QEvent.Type.FocusOut, Qt.FocusReason.ActiveWindowFocusReason))
+        set_ring.assert_not_called()
+
+    def test_focus_filter_does_not_delay_application_destruction_until_python_shutdown(self):
+        # Qt must release its native widgets while Python/SIP are fully alive.
+        # A controller -> application -> controller cycle delays that cleanup
+        # until interpreter shutdown and can crash virtual style callbacks.
+        code = textwrap.dedent('''
+            import gc
+            import sys
+            import weakref
+            sys.path.insert(0, sys.argv[1])
+            from PyQt6.QtWidgets import QApplication
+            from focus_visibility import install_button_focus_visibility
+            def create_application():
+                application = QApplication([])
+                install_button_focus_visibility()
+                return weakref.ref(application)
+            gc.disable()
+            reference = create_application()
+            assert reference() is None, "Focus filter retained QApplication after its owner returned"
+        ''')
+        result = subprocess.run(
+            [sys.executable, '-c', code, str(Path(__file__).resolve().parents[1] / 'desktop')],
+            env=dict(os.environ, QT_QPA_PLATFORM='offscreen'), capture_output=True,
+            text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_a_mouse_click_clears_the_keyboard_ring_without_disabling_focus(self):
         self.controller.keyboard_navigation = True

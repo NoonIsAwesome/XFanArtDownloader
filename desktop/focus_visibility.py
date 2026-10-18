@@ -12,7 +12,9 @@ from PyQt6.QtWidgets import QAbstractButton, QApplication
 class ButtonFocusVisibility(QObject):
     def __init__(self, application):
         super().__init__(application)
-        self.application = application
+        # QApplication owns this filter. Do not retain the application back:
+        # that Python cycle delays native Qt teardown until interpreter exit,
+        # when SIP virtual callbacks may no longer be safe.
         self.keyboard_navigation = False
 
     @staticmethod
@@ -32,19 +34,20 @@ class ButtonFocusVisibility(QObject):
         kind = event.type()
         if kind == QEvent.Type.MouseButtonPress:
             self.keyboard_navigation = False
-            self._set_ring(self.application.focusWidget(), False)
+            self._set_ring(QApplication.focusWidget(), False)
             self._set_ring(watched, False)
         elif kind == QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
             self.keyboard_navigation = True
-            self._set_ring(self.application.focusWidget(), True)
+            self._set_ring(QApplication.focusWidget(), True)
         elif kind == QEvent.Type.FocusIn:
             keyboard_reason = event.reason() in (Qt.FocusReason.TabFocusReason,
                                                  Qt.FocusReason.BacktabFocusReason,
                                                  Qt.FocusReason.ShortcutFocusReason)
             self._set_ring(watched, keyboard_reason or (
                 self.keyboard_navigation and event.reason() != Qt.FocusReason.MouseFocusReason))
-        elif kind == QEvent.Type.FocusOut:
-            self._set_ring(watched, False)
+        # The selector also requires :focus, so losing focus already hides the
+        # ring. Do not repolish during FocusOut: it can run inside a dialog's
+        # close/focus-restoration sequence, where re-entering the style is unsafe.
         return False
 
 
