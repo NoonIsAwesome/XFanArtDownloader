@@ -205,7 +205,7 @@ class RedownloadDialog(QDialog):
                 border:1px solid {colors['border']}; background:{colors['input']}; }}
             QRadioButton::indicator:checked {{ background:{colors['accent']}; border-color:{colors['accent']}; }}
             QRadioButton::indicator:hover {{ border-color:{colors['accent']}; }}
-            QRadioButton:focus {{ color:{colors['accent_soft_ink']}; }}
+            QRadioButton[keyboardFocus="true"]:focus {{ color:{colors['accent_soft_ink']}; }}
         """)
 
 

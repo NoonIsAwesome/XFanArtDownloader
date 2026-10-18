@@ -101,6 +101,12 @@ SQLite schema 3 以新增表保存工作、來源狀態、搜尋已見貼文與�
 
 `history_dialog.py` 透過 `storage.py` 的唯讀查詢顯示分頁媒體與來源進度，不建立缺失的資料庫，也不變更使用者紀錄。SQLite 自身仍可管理讀取所需的輔助檔案。查詢在執行緒池內完成，晚到結果不得覆蓋新篩選。開檔／開目錄前重新驗證保存的下載根目錄、實際路徑及媒體格式；外部文字使用純文字或轉義過的提示。
 
+主頁只保留作者、頭像、檔名與工作進度，不解碼媒體圖片。圖片預覽集中由紀錄視窗的 `MediaPreviewLoader` 處理：只有單筆已完成且仍位於原儲存目錄的圖片能解碼，切換選取或關窗會取消舊結果。`AvatarLoader` 僅讀公開頭像、不帶 Cookie，紀錄視窗也同步遵循主頁的 WARP 路由。
+
+紀錄視窗維持兩個分頁：「紀錄與圖片預覽」顯示媒體與預覽；「詳細下載狀況」合併本次執行的完整日誌與既有工作／來源進度。主控制器 `_status_entries` 保存最多 2000 筆原始範本與參數，視窗首次開啟／重開時同步快照，已建立後持續接收新增訊息，隱藏時也不漏記。主頁另維護有界的簡要日誌，只排除明確的來源列舉訊息，保留成功／略過、錯誤、登入與安全提示；兩種檢視都由原始範本重譯，不把翻譯後文字當成資料來源。
+
+The main page displays compact author/progress information without decoding media. The history view owns bounded local-image previews, cancels stale selection results, and keeps public-avatar requests on the selected connection route without authentication cookies.
+
 歷史重試只送出選取的媒體鍵，由主控制器建立同一種背景下載工作。選取模式不啟動其他搜尋或作者來源，也不能用空白表單放寬標籤：引擎必須依資料庫保存的真實原貼文，或已驗證的討論串根貼文及作者關聯，重新建立資格。
 
 已完成項目的主動重新下載與失敗重試分開：`redownload_dialog.py` 提供預設副本及需再次確認的覆寫選擇，`HistoryDialog.redownloadRequested` 只送出選取的完成媒體鍵與固定模式。主控制器停用其他來源，引擎仍檢查儲存的資格；不把「重新下載」當成取消標籤驗證的開關。

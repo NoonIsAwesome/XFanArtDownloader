@@ -226,6 +226,22 @@ class UsageGuideDialogTests(unittest.TestCase):
                 self.assertEqual(fresh.step_bodies[0].text(), i18n.tr(STEPS[0][1]))
                 self.assertEqual(fresh.close_button.text(), i18n.tr("關閉說明"))
 
+    def test_preview_guide_points_to_the_translated_history_entry_in_every_language(self):
+        self.assertIn("主頁只顯示作者與簡要進度", PREVIEW_HELP)
+        self.assertIn("選取一筆完成紀錄預覽本機圖片", PREVIEW_HELP)
+        for language in ("en", "ja", "ko", "zh_CN", "zh_TW"):
+            with self.subTest(language=language):
+                i18n.set_language(language)
+                translated = i18n.tr(PREVIEW_HELP)
+                self.assertIn(i18n.tr("查看紀錄與預覽"), translated)
+                self.assertIn(i18n.tr("紀錄與圖片預覽"), translated)
+                self.assertIn(i18n.tr("詳細下載狀況"), translated)
+                self.assertIn("🖼️", translated)
+                self.assertIn("🎬", translated)
+                self.assertIn("\\", translated)
+                if language != "zh_TW":
+                    self.assertNotEqual(translated, PREVIEW_HELP)
+
 
 if __name__ == "__main__":
     unittest.main()

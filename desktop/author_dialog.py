@@ -258,11 +258,11 @@ class AuthorInfoDialog(QDialog):
             QFrame#authorDivider {{ background: {colors['divider']}; border: none; }}
             QDialog#authorDialog QLabel[authorLink="true"] {{ border: 1px solid transparent; border-radius: 5px; padding: 5px 4px; }}
             QDialog#authorDialog QLabel[authorLink="true"]:hover {{ background: {colors['hover']}; }}
-            QDialog#authorDialog QLabel[authorLink="true"]:focus {{ background: {colors['accent_soft']}; border-color: {colors['accent']}; }}
+            QDialog#authorDialog QLabel[authorLink="true"][keyboardFocus="true"]:focus {{ background: {colors['accent_soft']}; border-color: {colors['accent']}; }}
             QPushButton#authorClose {{ background: {colors['accent']}; color: {colors['accent_ink']};
                 border: 1px solid {colors['accent']}; border-radius: 7px; padding: 6px 14px; }}
             QPushButton#authorClose:hover {{ background: {colors['accent_hover']}; }}
             QPushButton#authorClose:pressed {{ background: {colors['accent_pressed']}; }}
-            QPushButton#authorClose:focus {{ border: 2px solid {colors['ink']}; padding: 5px 13px; }}
+            QPushButton#authorClose[keyboardFocus="true"]:focus {{ border: 2px solid {colors['ink']}; padding: 5px 13px; }}
         """)
         self._render_links()

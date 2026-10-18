@@ -7,16 +7,19 @@ from pathlib import Path
 import re
 
 from PyQt6.QtCore import QDateTime, QItemSelectionModel, QObject, QRunnable, QThreadPool, QTimer, Qt, QUrl, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QDesktopServices, QIcon
+from PyQt6.QtGui import QDesktopServices, QIcon, QTextCursor
 from PyQt6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QPushButton, QScrollArea, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QLineEdit, QPlainTextEdit, QPushButton, QScrollArea, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 import storage
 from i18n import tr, translate_text, locale as ui_locale
 from resources_rc import get_icon_path
 from redownload_dialog import choose_redownload_mode
+from author_avatar import AvatarLoader, avatar_pixmap, valid_avatar_url
+from media_preview import MediaPreviewLoader, preview_signature
+from ui_design import PreviewLabel, line_icon
 from ui_theme import apply_dialog_theme, theme_colors
 
 
@@ -124,6 +127,18 @@ class HistoryDialog(QDialog):
         self._page, self._total = 1, 0
         self._rows, self._jobs, self._sources = [], [], []
         self._last_error = ""
+        self._session_entries = []
+        self._preview_key = self._preview_data = self._preview_kind = None
+        self._preview_image = self._avatar_image = self._preview_signature = None
+        self._avatar_route = (False, 0)
+        self._avatar_loader = AvatarLoader(self)
+        self._preview_loader = MediaPreviewLoader(self)
+        self._avatar_loader.ready.connect(self._avatar_ready)
+        self._preview_loader.ready.connect(self._preview_ready)
+        # 父視窗直接釋放也要取消；背景工作只連到 QObject slot，不保留視窗閉包。
+        # Direct parent destruction cancels work too; background signals use QObject slots, not window closures.
+        self.destroyed.connect(self._avatar_loader.close)
+        self.destroyed.connect(self._preview_loader.close)
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(250)
@@ -165,6 +180,38 @@ class HistoryDialog(QDialog):
         self.history_table.setMinimumHeight(140)
         self.history_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         body.addWidget(self.history_table, 1)
+        # 沿用圖庫的頭像與圖片元件；單筆已完成紀錄才啟用小型本機預覽。
+        # Reuse gallery avatar/image components; enable a compact local preview for one completed record.
+        self.preview_panel = QWidget()
+        preview_layout = QHBoxLayout(self.preview_panel)
+        preview_layout.setContentsMargins(0, 2, 0, 2)
+        preview_layout.setSpacing(16)
+        identity = QVBoxLayout()
+        identity.setSpacing(5)
+        self.preview_author_row = QWidget()
+        author_layout = QHBoxLayout(self.preview_author_row)
+        author_layout.setContentsMargins(0, 0, 0, 0)
+        author_layout.setSpacing(10)
+        self.preview_avatar_label = _label()
+        self.preview_avatar_label.setFixedSize(40, 40)
+        author_layout.addWidget(self.preview_avatar_label)
+        names = QVBoxLayout()
+        names.setSpacing(2)
+        self.preview_author_label = _label()
+        self.preview_author_label.setProperty("role", "field")
+        self.preview_handle_label = _label(muted=True)
+        names.addWidget(self.preview_author_label)
+        names.addWidget(self.preview_handle_label)
+        author_layout.addLayout(names, 1)
+        identity.addWidget(self.preview_author_row)
+        self.preview_status_label = _label(muted=True)
+        identity.addWidget(self.preview_status_label)
+        preview_layout.addLayout(identity, 1)
+        self.preview_image_label = PreviewLabel()
+        self.preview_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_image_label.setFixedSize(232, 132)
+        preview_layout.addWidget(self.preview_image_label)
+        body.addWidget(self.preview_panel)
         self.detail_label = _label(muted=True)
         self.detail_label.setMaximumHeight(88)
         body.addWidget(self.detail_label)
@@ -190,6 +237,16 @@ class HistoryDialog(QDialog):
         progress_layout = QVBoxLayout(progress)
         progress_layout.setContentsMargins(0, 14, 0, 0)
         progress_layout.setSpacing(10)
+        # 本次完整日誌與持久化來源進度共用第二分頁，主頁只保留簡要回饋。
+        # Keep the full session log and persisted source progress in the second tab; the main page stays compact.
+        self.session_log_hint = _label(muted=True)
+        progress_layout.addWidget(self.session_log_hint)
+        self.session_log = QPlainTextEdit()
+        self.session_log.setReadOnly(True)
+        self.session_log.setMinimumHeight(170)
+        self.session_log.setMaximumHeight(260)
+        self.session_log.document().setMaximumBlockCount(2000)
+        progress_layout.addWidget(self.session_log)
         self.jobs_hint = _label(muted=True)
         progress_layout.addWidget(self.jobs_hint)
         self.jobs_table = _table(4)
@@ -239,6 +296,34 @@ class HistoryDialog(QDialog):
         self.close_button.clicked.connect(self.close)
         self.set_theme(theme)
         self.refresh_language()
+
+    @staticmethod
+    def _render_session_entry(template, values):
+        if values is None:
+            return translate_text(template)
+        arguments = {key: translate_text(str(value)) if key in {"exc", "message", "state", "operation"} else value
+                     for key, value in values.items()}
+        return tr(template, **arguments)
+
+    def set_session_log(self, entries):
+        # 重開時以主控制器的有限快照對齊，不重複加入隱藏期間已接收的訊息。
+        # Resync from the controller's bounded snapshot on reopen without duplicating hidden-window updates.
+        self._session_entries = [(str(template), dict(values) if values is not None else None)
+                                 for template, values in entries[-2000:]]
+        self._render_session_log()
+
+    def append_session_log(self, entry):
+        template, values = entry
+        entry = (str(template), dict(values) if values is not None else None)
+        self._session_entries.append(entry)
+        del self._session_entries[:-2000]
+        # appendPlainText 保持外部檔名與訊息為純文字，不把它們當成 HTML。
+        # appendPlainText keeps external filenames/messages literal instead of interpreting HTML.
+        self.session_log.appendPlainText(self._render_session_entry(*entry))
+
+    def _render_session_log(self):
+        self.session_log.setPlainText("\n".join(self._render_session_entry(*entry) for entry in self._session_entries))
+        self.session_log.moveCursor(QTextCursor.MoveOperation.End)
 
     def _request(self, kind, **arguments):
         self._generation += 1
@@ -314,6 +399,116 @@ class HistoryDialog(QDialog):
     def _selection_changed(self):
         self._update_controls()
 
+    def configure_route(self, warp_proxy: bool, port: int):
+        # 紀錄頭像遵循主視窗的路由；切換時取消舊請求，WARP 不降級為直連。
+        # History avatars follow the main window route; changing it cancels requests without direct fallback.
+        if warp_proxy and (type(port) is not int or not 1 <= port <= 65535):
+            raise ValueError("Invalid local proxy port")
+        route = (bool(warp_proxy), port if warp_proxy else 0)
+        if route == self._avatar_route:
+            return
+        self._cancel_previews()
+        self._avatar_loader.configure(warp_proxy, port)
+        self._avatar_route = route
+        self._update_controls()
+
+    def _cancel_previews(self):
+        self._avatar_loader.cancel()
+        self._preview_loader.cancel()
+        self._preview_key = self._preview_data = self._preview_kind = None
+        self._preview_image = self._avatar_image = self._preview_signature = None
+
+    def _sync_preview(self, single):
+        # 選取、篩選、分頁及顯示狀態共用同一個身分，不能讓舊結果回填新列。
+        # Selection, filters, pages and visibility share one identity so stale results cannot refill a new row.
+        eligible = (single is not None and single.get("state") == "downloaded"
+                    and not self._hidden and self.isVisible() and not self._loading
+                    and self.tabs.currentIndex() == 0)
+        key = tuple(single.get(field) for field in ("media_key", "author", "author_name", "avatar_url", "media_type",
+                    "safe_file_path", "safe_folder_path", "preview_allowed")) if eligible else None
+        if key == self._preview_key:
+            self._refresh_preview_widgets()
+            return
+        self._cancel_previews()
+        if eligible:
+            self._preview_key = key
+            handle = str(single.get("author") or "")
+            self._preview_data = {"author_name": str(single.get("author_name") or "")[:100],
+                                  "author": handle if re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle) else ""}
+            self._preview_kind = "unavailable"
+            avatar = single.get("avatar_url")
+            if valid_avatar_url(avatar):
+                self._avatar_loader.load(avatar)
+            path, root = single.get("safe_file_path"), single.get("safe_folder_path")
+            # safe 路徑仍是快照；讀取前再次排除被換成 reparse point 的目錄與檔案。
+            # Safe paths are snapshots; recheck replaced reparse directories/files before a read.
+            allowed = (single.get("preview_allowed") and path and root
+                       and storage._history_preview_allowed({"path": path, "target_dir": root}))
+            self._preview_signature = preview_signature(path, root) if allowed else None
+            if allowed:
+                if single.get("media_type") == "video":
+                    self._preview_kind = "video"
+                elif single.get("media_type") == "image" and self._preview_signature is not None:
+                    self._preview_kind = "loading"
+                    self._preview_loader.load(path, root)
+        self._refresh_preview_widgets()
+        if eligible:
+            QTimer.singleShot(0, self._reveal_preview)
+
+    @pyqtSlot()
+    def _reveal_preview(self):
+        # 小視窗選取後捲到預覽與開檔動作；不讓新增圖片藏在分頁下緣。
+        # Reveal the preview and Open actions after selection on short windows.
+        if self._preview_is_current():
+            self.tabs.widget(0).ensureWidgetVisible(self.file_button, 0, 4)
+
+    def _preview_is_current(self):
+        selected = self._selected_media()
+        return (not self._hidden and self.isVisible() and not self._loading and self.tabs.currentIndex() == 0
+                and self._preview_key is not None and len(selected) == 1
+                and selected[0].get("state") == "downloaded" and selected[0].get("media_key") == self._preview_key[0])
+
+    @pyqtSlot(object)
+    def _avatar_ready(self, image):
+        if self._preview_is_current():
+            self._avatar_image = image
+            self._refresh_preview_widgets()
+
+    @pyqtSlot(object)
+    def _preview_ready(self, image):
+        if self._preview_is_current() and self._preview_kind == "loading":
+            signature = self._preview_signature
+            valid = signature is not None and preview_signature(signature[0], signature[1]) == signature
+            self._preview_image = image if valid else None
+            self._preview_kind = "image" if self._preview_image is not None else "unavailable"
+            self._refresh_preview_widgets()
+
+    def _refresh_preview_widgets(self):
+        if not hasattr(self, "preview_panel"):
+            return
+        colors = theme_colors(self.theme_mode)
+        self.preview_author_row.setVisible(self._preview_data is not None)
+        self.preview_image_label.setVisible(self._preview_data is not None)
+        data = self._preview_data or {}
+        name, handle = data.get("author_name", ""), data.get("author", "")
+        self.preview_author_label.setText(name or ("@" + handle if handle else tr("作者資料未提供")))
+        self.preview_author_label.setToolTip(_tip(name))
+        self.preview_handle_label.setText("@" + handle if handle else "")
+        self.preview_handle_label.setVisible(bool(handle and name))
+        self.preview_avatar_label.setPixmap(avatar_pixmap(self._avatar_image, colors))
+        self.preview_avatar_label.setAccessibleName(tr("作者"))
+        self.preview_avatar_label.setToolTip(tr("作者公開頭像") if self._avatar_image is not None
+                                            else tr("未提供頭像，或頭像暫時無法載入。"))
+        captions = {None: "選取一筆已完成的紀錄以預覽本機圖片。", "loading": "正在載入本機預覽…",
+                    "unavailable": "本機預覽無法使用；請開啟檔案確認。", "video": "影片不會自動播放；請使用「開啟檔案」。",
+                    "image": "本機圖片預覽"}
+        self.preview_status_label.setText(tr(captions[self._preview_kind]))
+        self.preview_image_label.setAccessibleName(tr("本機圖片預覽"))
+        self.preview_image_label.setStyleSheet(
+            f"background:{colors['log']};border:1px solid {colors['border']};border-radius:7px;")
+        self.preview_image_label.set_preview(self._preview_image,
+            line_icon("video" if self._preview_kind == "video" else "image", 42, colors["muted"]))
+
     def _job_selected(self):
         indices = self.jobs_table.selectionModel().selectedRows()
         if indices and indices[0].row() < len(self._jobs):
@@ -369,6 +564,7 @@ class HistoryDialog(QDialog):
     def _update_controls(self):
         selected = self._selected_media()
         single = selected[0] if len(selected) == 1 else None
+        self._sync_preview(single)
         self.retry_button.setVisible(self.tabs.currentIndex() == 0)
         self.redownload_button.setVisible(self.tabs.currentIndex() == 0)
         self.retry_button.setEnabled(self._retry_allowed and not self._loading and any(row["state"] == "failed" for row in selected))
@@ -380,7 +576,9 @@ class HistoryDialog(QDialog):
         self.next_button.setEnabled(not self._loading and self._page * 40 < self._total)
         self.page_label.setText(tr("第 {page} / {pages} 頁 · 共 {total} 個媒體",page=self._page,pages=max(1,(self._total+39)//40),total=self._total))
         if single:
-            detail = str(single.get("path") or single["filename"])
+            # 畫面只顯示簡短檔名；完整路徑留在提示中，避免壓縮預覽與動作的空間。
+            # Keep the visible filename short; retain the full path in the tooltip to protect preview/action space.
+            detail = str(single.get("display_path") or single["filename"])
             if single["state"] == "downloaded" and not single.get("safe_file_path"):
                 detail += "\n" + tr("檔案已不存在或不在原儲存目錄內。")
             if single.get("error"):
@@ -398,7 +596,7 @@ class HistoryDialog(QDialog):
                 if event.get("error"):
                     detail += "\n" + translate_text(str(event["error"]))
             self.detail_label.setText(detail[:800])
-            self.detail_label.setToolTip(_tip(detail))
+            self.detail_label.setToolTip(_tip(str(single.get("path") or single["filename"]) + "\n" + detail))
         else:
             self.detail_label.setText(tr("選取已完成項目可重新下載；失敗項目可重試。"))
             self.detail_label.setToolTip("")
@@ -459,8 +657,12 @@ class HistoryDialog(QDialog):
         self.setLocale(ui_locale())
         self.setWindowTitle(tr("下載紀錄"))
         self.title_label.setText(tr("下載紀錄"))
-        self.tabs.setTabText(0, tr("下載紀錄"))
-        self.tabs.setTabText(1, tr("收集進度"))
+        self.tabs.setTabText(0, tr("紀錄與圖片預覽"))
+        self.tabs.setTabText(1, tr("詳細下載狀況"))
+        self.session_log_hint.setText(tr("本次執行紀錄（最多保留 2000 筆）"))
+        self.session_log.setAccessibleName(tr("詳細下載狀況"))
+        self.session_log.setPlaceholderText(tr("開始後，會在這裡顯示完整下載狀況。"))
+        self._render_session_log()
         self.status_label.setText(tr("狀態"))
         self.search_label.setText(tr("搜尋"))
         for index, text in enumerate(("全部","已完成","失敗")):
@@ -502,6 +704,7 @@ class HistoryDialog(QDialog):
             QTabBar::tab:selected {{ background:{colors['accent_soft']}; color:{colors['accent_soft_ink']};
                 border-bottom-color:{colors['accent']}; }}
         """)
+        self._refresh_preview_widgets()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -516,6 +719,12 @@ class HistoryDialog(QDialog):
         self._pending = None
         self._loading = False
         self._debounce.stop()
+        self._cancel_previews()
+        self._refresh_preview_widgets()
+
+    def hideEvent(self, event):
+        self._cancel_queries()
+        super().hideEvent(event)
 
     def closeEvent(self, event):
         self._cancel_queries()

@@ -88,9 +88,12 @@ class MainLanguageTests(unittest.TestCase):
         saved = json.loads(window.settings_file.read_text(encoding="utf-8"))
         self.assertEqual(saved["language"], "ko")
 
-    def test_saved_language_is_applied_before_first_run_guide(self):
+    def test_startup_keeps_help_closed_until_manual_activation_in_saved_language(self):
         window = self.make_window("en", show_notice=True, settings={"hashtag": "#chosen_art"})
-        self.wait_until(lambda: window._usage_guide is not None)
+        QTest.qWait(50)
+        self.assertIsNone(window._usage_guide)
+        window.help_btn.click()
+        self.assertIsNotNone(window._usage_guide)
         self.assertEqual(window.language_mode, "en")
         self.assertEqual(window.download_btn.text(), i18n.tr("開始收集"))
         self.assertNotEqual(window.download_btn.text(), "開始收集")
@@ -309,7 +312,7 @@ class MainLanguageTests(unittest.TestCase):
                 QTest.keyClick(checkbox, Qt.Key.Key_Space)
                 self.assertIs(checkbox.isChecked(), not before)
 
-    def test_current_author_preview_and_log_fit_short_window_after_layout_settles(self):
+    def test_current_author_file_and_log_fit_short_window_without_inline_preview(self):
         window = self.make_window()
         window.show()
         window._download_worker = object()
@@ -326,7 +329,13 @@ class MainLanguageTests(unittest.TestCase):
                     "display_path":"fixture_artist\\fixture.mp4", "media_type":"video",
                 })
                 viewport = window.sidebar_scroll.viewport()
-                visible = (window.current_media_row, window.current_preview_container, window.status_box)
+                self.assertEqual(window.current_author_label.literal_text,
+                                 "A long public author name · @fixture_artist")
+                self.assertEqual(window.current_file_label.literal_text, "fixture_artist\\fixture.mp4")
+                self.assertEqual(window._current_media["state"], "downloaded")
+                for name in ("current_preview_container", "current_preview_label", "current_preview_caption"):
+                    self.assertFalse(hasattr(window, name), name)
+                visible = (window.current_media_row, window.status_box)
                 self.wait_until(lambda: all(
                     widget.mapTo(viewport, QPoint()).y() >= 0
                     and widget.mapTo(viewport, QPoint()).y() + widget.height() <= viewport.height()

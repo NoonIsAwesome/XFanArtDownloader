@@ -79,6 +79,28 @@ class I18nTests(unittest.TestCase):
             i18n.set_language('en')
             self.assertEqual(i18n.translate_text('已下載：C:/私人資料/file.png'), 'Downloaded: C:/私人資料/file.png')
 
+    def test_media_status_templates_preserve_both_symbols_and_literal_short_path(self):
+        # 狀態圖示與媒體圖示分別表達結果與種類；切換語言不能吞掉其中一個。
+        # Status and media symbols convey different information; retain both in every language.
+        templates = (
+            ('✅ {icon} 已下載：{display_path}', '✅', 'display_path'),
+            ('⏭️ {icon} 已存在，略過：{display_path}', '⏭️', 'display_path'),
+            ('✅ {icon} 重新下載完成：{display}', '✅', 'display'),
+        )
+        path = 'artista\\私人資料_1001.png'
+        for language in ('en', 'ja', 'ko', 'zh_CN'):
+            i18n.set_language(language)
+            for template, status, field in templates:
+                for icon in ('🖼️', '🎬'):
+                    with self.subTest(language=language, template=template, icon=icon):
+                        values = {'icon': icon, field: path}
+                        source = template.format(**values)
+                        translated = i18n.translate_text(source)
+                        self.assertNotEqual(translated, source)
+                        self.assertTrue(translated.startswith(f'{status} {icon} '))
+                        self.assertTrue(translated.endswith(path))
+                        self.assertEqual(translated, i18n.tr(template, **values))
+
     def test_catalogs_have_same_keys_and_preserve_format_fields(self):
         root = Path(i18n.__file__).parent / 'locales'
         catalogs = {language:json.loads((root / f'{language}.json').read_text(encoding='utf-8'))
@@ -91,6 +113,23 @@ class I18nTests(unittest.TestCase):
                 with self.subTest(language=language, source=source):
                     self.assertEqual(sorted(re.findall(r'\{([^{}]+)\}', source)),
                                      sorted(re.findall(r'\{([^{}]+)\}', target)))
+
+    def test_compact_summaries_translate_without_losing_counts_or_status_symbols(self):
+        templates = (
+            '{state}：下載 {downloaded} · 略過 {skipped} · 失敗 {failed}',
+            '✅ 下載 {downloaded} · ⏭️ 略過 {skipped} · ❌ 失敗 {failed}',
+        )
+        values = {'state': 'ready', 'downloaded': 17, 'skipped': 28, 'failed': 39}
+        for language in ('en', 'ja', 'ko', 'zh_CN'):
+            i18n.set_language(language)
+            for template in templates:
+                with self.subTest(language=language, template=template):
+                    translated = i18n.tr(template, **values)
+                    self.assertNotEqual(translated, template.format(**values))
+                    for count in ('17', '28', '39'):
+                        self.assertIn(count, translated)
+                    for symbol in ('✅', '⏭️', '❌'):
+                        self.assertEqual(symbol in translated, symbol in template)
 
     def test_nested_known_error_message_is_translated_without_touching_path(self):
         catalog = {'操作失敗：{error}':'Operation failed: {error}', '檔案無法開啟':'File cannot be opened'}

@@ -377,7 +377,7 @@ class DownloadEngine:
                  "author_name": name or handle, "avatar_url": avatar,
                  "filename": file_name, "display_path": display_path,
                  "media_type": "video" if str(metadata.get("extension")).lower() == "mp4" else "image"}
-        if state == "downloaded":
+        if state in {"downloaded", "skipped"}:
             event["path"] = str(destination.resolve())
         try:
             self.progress(event)
@@ -501,6 +501,8 @@ class DownloadEngine:
         if row["state"] == "completed":
             self.result.sources_skipped += 1
             self._executed_source_keys.add(row["key"])
+            source_name = row["name"]
+            self.log(f"已完成來源，略過重新掃描：{source_name}")
             return "completed"
         kind, key = row["kind"], row["key"]
         if kind == "retry" and not (self.options.retry_failed or self._selected_keys):
@@ -917,7 +919,7 @@ class DownloadEngine:
                             self.result.downloaded += 1
                             icon = "🎬" if str(row["metadata"].get("extension")).lower() == "mp4" else "🖼️"
                             display = self._media_progress("downloaded", row, candidate["metadata"], destination.name, destination)
-                            self.log(f"{icon} 重新下載完成：{display}")
+                            self.log(f"✅ {icon} 重新下載完成：{display}")
                             downloaded = True
                             break
                         except (Cancelled, _RedownloadRejected):
@@ -1234,7 +1236,13 @@ class DownloadEngine:
                 old_path = Path(row["path"])
                 size, digest = validate_file(old_path, extension)
                 if size == row["size"] and digest == row["sha256"]:
+                    # 舊檔通過相同驗證才通知顯示；略過不增加下載數，也不改完成紀錄。
+                    # Publish existing media only after verification; skipping never changes success state or download counts.
+                    self._check_stop()
                     self.result.skipped += 1
+                    icon = "🎬" if extension == "mp4" else "🖼️"
+                    display_path = self._media_progress("skipped", row, metadata, old_path.name, old_path)
+                    self.log(f"⏭️ {icon} 已存在，略過：{display_path}")
                     return
                 raise ValueError("檔案內容與下載紀錄不同。")
             except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):
@@ -1285,7 +1293,7 @@ class DownloadEngine:
                 self.result.downloaded += 1
                 icon = "🎬" if extension == "mp4" else "🖼️"
                 display_path = self._media_progress("downloaded", row, metadata, file_name, destination)
-                self.log(f"{icon} 已下載：{display_path}")
+                self.log(f"✅ {icon} 已下載：{display_path}")
                 if self.options.delay and self.stop_event.wait(random.uniform(0.5, 1.5)):
                     raise Cancelled()
                 return

@@ -47,7 +47,8 @@ class UpdateCheckerTests(unittest.TestCase):
         self.assertIn(f"StringStruct('ProductVersion', '{APP_VERSION}')", packaging)
 
     def test_version_comparison_supports_four_components_and_safe_unknown(self):
-        self.assertEqual(updates._version("v3.0.0"), updates._version(APP_VERSION))
+        self.assertEqual(updates._version("v3.0.0"), (3, 0, 0, 0))
+        self.assertEqual(updates._version("v" + APP_VERSION), updates._version(APP_VERSION))
         for value in (None, "3.0.0\n", "3.0.0-secret", "3.0.0.0.1", "9999999.0"):
             self.assertIsNone(updates._version(value))
         result = self.read_result()

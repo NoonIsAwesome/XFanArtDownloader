@@ -16,8 +16,8 @@ import threading
 import unicodedata
 from urllib.parse import urlsplit
 
-from PyQt6.QtCore import QDate, QEvent, QObject, QThread, QTimer, Qt, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QCloseEvent, QIcon, QTextCursor
+from PyQt6.QtCore import QDate, QEvent, QObject, QThread, QTimer, Qt, QUrl, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QCloseEvent, QDesktopServices, QIcon, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QDateEdit, QFileDialog,
     QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QTextEdit, QWidget,
@@ -31,10 +31,9 @@ from login_browser import clear_login_data
 from update_checker import UpdateCheckWorker
 from update_dialog import UpdateResultDialog, confirm_clear_login
 from resources_rc import get_icon_path
-from ui_design import apply_dialog_theme, build_gallery_layout, refresh_gallery_summary, set_window_theme, WrappingCheckBox, line_icon, theme_colors
+from ui_design import apply_dialog_theme, build_gallery_layout, refresh_gallery_summary, set_window_theme, WrappingCheckBox, theme_colors
 from author_avatar import AvatarLoader, avatar_pixmap
-from media_preview import MediaPreviewLoader
-from gallery_widgets import GalleryDateEdit, UserNoticeDialog
+from gallery_widgets import GalleryDateEdit, GallerySpinBox, UserNoticeDialog
 from help_dialog import UsageGuideDialog
 from i18n import (
     tr, translate_text, set_language, language_mode, locale as ui_locale,
@@ -277,13 +276,10 @@ class TwitterDownloader(QWidget):
         self._usage_guide = None
         self._usage_guide_seen = False
         self._status_entries = []
+        self._compact_status_entries = []
         self._result_detail = None
         self._current_media = None
         self._avatar_image = None
-        self._preview_image = None
-        self._preview_kind = None
-        self._preview_display = ""
-        self._preview_output_root = None
 
         self.setWindowIcon(QIcon(get_icon_path()))
         self.setWindowTitle(f"FanArt Downloader {APP_VERSION}")
@@ -340,7 +336,7 @@ class TwitterDownloader(QWidget):
         self.driver_check_btn = QPushButton(tr('檢查驅動更新'))
         self.driver_check_btn.setToolTip(tr('新版下載不需要此驅動。'))
         self.warp_proxy_checkbox = WrappingCheckBox(tr("透過 WARP 本機代理連線（僅本軟體）"))
-        self.warp_proxy_port_input = QSpinBox()
+        self.warp_proxy_port_input = GallerySpinBox()
         self.warp_proxy_port_input.setRange(1, 65535)
         self.warp_proxy_port_input.setValue(40000)
         self.warp_proxy_port_input.setAccessibleName(tr("本機代理連接埠"))
@@ -363,20 +359,18 @@ class TwitterDownloader(QWidget):
         self.human_behavior_checkbox = WrappingCheckBox(tr('下載間隨機休息（假裝自己不是機器人）'))
         self.human_behavior_checkbox.setChecked(True)
 
-        # 先建立畫面再載入偏好；非同步頭像／預覽完成後才由主執行緒更新元件。
-        # Build widgets before restoring preferences; deliver asynchronous avatar and preview results to the GUI thread.
+        # 先建立畫面再載入偏好；非同步頭像完成後才由主執行緒更新元件。
+        # Build widgets before restoring preferences; deliver asynchronous avatars to the GUI thread.
         self.setup_ui()
         self._avatar_loader = AvatarLoader(self)
         self._avatar_loader.ready.connect(self._avatar_ready)
-        self._preview_loader = MediaPreviewLoader(self)
-        self._preview_loader.ready.connect(self._preview_ready)
         self.setup_signals()
         self._load_settings()
         self._update_controls()
         self.refresh_language()
         if show_notice:
-            if not self._usage_guide_seen:
-                QTimer.singleShot(0, self.show_usage_guide)
+            # 說明只由使用者點按開啟，啟動時不打斷收集工作。
+            # Open help only on explicit activation; startup never interrupts the collection workflow.
             QTimer.singleShot(0, self._auto_check_driver)
 
     def setup_ui(self):
@@ -389,13 +383,16 @@ class TwitterDownloader(QWidget):
         self.cookie_save_btn.clicked.connect(self.save_cookies)
         self.cookie_import_btn.clicked.connect(self.import_cookie_file)
         self.choose_path_btn.clicked.connect(self.select_download_path)
+        self.open_download_folder_btn.clicked.connect(self.open_download_folder)
         self.download_btn.clicked.connect(self.start_download_thread)
         self.stop_btn.clicked.connect(self.stop_download)
         self.driver_check_btn.clicked.connect(self.check_driver_update)
         self.author_media_checkbox.toggled.connect(self._update_controls)
         self.limit_count_checkbox.toggled.connect(self._update_controls)
         self.limit_date_checkbox.toggled.connect(self._update_controls)
+        self.warp_proxy_checkbox.toggled.connect(self._refresh_history_route)
         self.warp_proxy_checkbox.toggled.connect(self._update_controls)
+        self.warp_proxy_port_input.valueChanged.connect(self._refresh_history_route)
         self.hashtag_input.textChanged.connect(self._refresh_summary)
         self.search_checkbox.toggled.connect(self._refresh_summary)
         self.discover_authors_checkbox.toggled.connect(self._refresh_summary)
@@ -408,6 +405,7 @@ class TwitterDownloader(QWidget):
         self.help_btn.clicked.connect(self.show_usage_guide)
         self.language_combo.currentIndexChanged.connect(self._language_selected)
         self.history_action.triggered.connect(self.show_download_history)
+        self.history_button.clicked.connect(self.show_download_history)
         self.update_action.triggered.connect(self.check_updates)
         self.clear_login_action.triggered.connect(self.clear_saved_login)
 
@@ -442,8 +440,8 @@ class TwitterDownloader(QWidget):
         if self._result_detail is not None:
             template, values = self._result_detail
             self.result_detail_label.setText(tr(template, **values))
-        translated_log = "\n".join(self._render_status(*entry) for entry in self._status_entries)
-        self.status_box.setPlainText(translated_log + ("\n" if self._status_entries else ""))
+        translated_log = "\n".join(self._render_status(*entry) for entry in self._compact_status_entries)
+        self.status_box.setPlainText(translated_log + ("\n" if self._compact_status_entries else ""))
         self.status_box.moveCursor(QTextCursor.MoveOperation.End)
         for child in self.findChildren(QWidget):
             if hasattr(child, "retranslate_ui"):
@@ -469,9 +467,34 @@ class TwitterDownloader(QWidget):
     def _log(self, template, **values):
         # 保存「訊息範本＋參數」供切換語言時重譯；檔名與作者帳號保持原樣。
         # Store message templates and arguments for retranslation while keeping filenames and handles literal.
-        self._status_entries.append((template, values))
+        self._record_status(template, values)
+
+    @staticmethod
+    def _compact_status_entry(template, values):
+        # 只隱藏已知的來源列舉細節；未知訊息、登入／安全提示及錯誤仍留在主頁。
+        # Hide explicit source-enumeration chatter only; keep unknown, login/security and error feedback visible.
+        detailed_prefixes = ("開始來源：", "已完成來源，略過重新掃描：", "目標標籤：",
+            "同作者留言補抓已開啟：", "續跑工作 ", "已達本輪 ", "本輪：", "📋 來源進度：", "↪️ 已接續先前未完成的工作；",
+            "📋 本次排定來源已處理完畢；")
+        if template.startswith(detailed_prefixes):
+            return None
+        if template == '{state}：下載 {downloaded} 個媒體，略過 {skipped}，失敗 {failed}，標籤／日期不符 {filtered}；處理 {posts} 則貼文。':
+            return ('{state}：下載 {downloaded} · 略過 {skipped} · 失敗 {failed}', values)
+        return template, values
+
+    def _record_status(self, template, values):
+        # 完整原始範本持續保留，不依紀錄視窗是否開啟；兩個檢視皆有固定容量。
+        # Retain canonical templates even before history opens; both views have a fixed capacity.
+        entry = (template, values)
+        self._status_entries.append(entry)
         del self._status_entries[:-2000]
-        self._append_status_text(self._render_status(template, values))
+        compact = self._compact_status_entry(template, values)
+        if compact is not None:
+            self._compact_status_entries.append(compact)
+            del self._compact_status_entries[:-2000]
+            self._append_status_text(self._render_status(*compact))
+        if self._history_dialog is not None:
+            self._history_dialog.append_session_log(entry)
 
     @staticmethod
     def _public_text(value, maximum=200):
@@ -487,23 +510,13 @@ class TwitterDownloader(QWidget):
             self._avatar_image = image
             self.refresh_current_media()
 
-    @pyqtSlot(object)
-    def _preview_ready(self, image):
-        if self._close_pending or self._stop_event.is_set():
-            return
-        self._preview_image = image
-        self._preview_kind = "image" if image is not None else "unavailable"
-        self.refresh_current_media()
-        QTimer.singleShot(0, self._reveal_download_status)
-
     @pyqtSlot()
     def _reveal_download_status(self):
-        # Visibility changes invalidate the scroll content's geometry. Wait for
-        # that layout pass before revealing both the compact preview and log.
-        if self._close_pending or self._stop_event.is_set() or self._preview_kind is None:
+        # 作者列顯示後等版面更新，再讓目前作者與執行紀錄同時可見。
+        # Wait for the author row's layout before revealing the current author and log together.
+        if self._close_pending or self._stop_event.is_set() or self._current_media is None:
             return
-        available = (self.sidebar_scroll.viewport().height() - self.current_media_row.height()
-                     - self.current_preview_container.height() - 42)
+        available = self.sidebar_scroll.viewport().height() - self.current_media_row.height() - 42
         self.status_box.setMaximumHeight(max(100, available))
         QTimer.singleShot(0, self._scroll_download_status)
 
@@ -511,57 +524,52 @@ class TwitterDownloader(QWidget):
     def _scroll_download_status(self):
         if self._close_pending or self._stop_event.is_set():
             return
-        # QTextEdit has a focus proxy; ensureWidgetVisible can reveal only that
-        # cursor rectangle. The log is the last content above the final rule.
+        # QTextEdit 的焦點代理只會捲到游標；紀錄位於側欄最底端，直接捲到末端。
+        # QTextEdit's focus proxy reveals only its cursor; the log is last, so scroll to the end.
         bar = self.sidebar_scroll.verticalScrollBar()
         bar.setValue(bar.maximum())
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if hasattr(self, "sidebar_scroll") and self._preview_kind is not None:
+        if hasattr(self, "sidebar_scroll") and self._current_media is not None:
             QTimer.singleShot(0, self._reveal_download_status)
 
     def _media_progress(self, worker, event):
         # 比對 worker 身分，而非只看是否下載中：上一輪排隊中的 signal 可能較晚送達。
         # Check worker identity because queued signals from an earlier run may arrive after a restart.
-        # Queued events from a stopped/previous run must never revive network
-        # work or replace the author/preview of a newly started collection.
+        # 已停止或前輪排隊中的事件不可重新啟動頭像請求，或取代新工作的作者資訊。
+        # Queued events from stopped/previous runs cannot restart avatar requests or replace the new author.
         if (worker is not self._download_worker or not self.is_downloading
                 or self._stop_event.is_set() or self._close_pending or not isinstance(event, dict)
-                or event.get("type") != "media" or event.get("state") not in {"downloading", "downloaded"}):
+                or event.get("type") != "media" or event.get("state") not in {"downloading", "downloaded", "skipped"}):
             return
         previous = self._current_media
         self._current_media = {key: self._public_text(event.get(key), maximum)
                                for key, maximum in (("author_handle", 15), ("author_name", 100),
                                                     ("filename", 160), ("display_path", 200))}
+        self._current_media["state"] = event["state"]
         if previous is None or previous.get("author_handle") != self._current_media["author_handle"]:
             self._avatar_image = None
         self.refresh_current_media()
         self._avatar_loader.load(event.get("avatar_url"))
-        if previous is None:
-            self.sidebar_scroll.ensureWidgetVisible(self.current_media_row, 0, 8)
-        if event["state"] == "downloaded":
-            self._preview_display = self._current_media["display_path"] or self._current_media["filename"]
-            self._preview_image = None
-            if event.get("media_type") == "video":
-                self._preview_loader.cancel()
-                self._preview_kind = "video"
-            elif event.get("media_type") == "image" and self._preview_output_root is not None:
-                self._preview_kind = "loading"
-                self._preview_loader.load(event.get("path"), self._preview_output_root)
-            else:
-                self._preview_kind = "unavailable"
-            self.refresh_current_media()
-            QTimer.singleShot(0, self._reveal_download_status)
+        QTimer.singleShot(0, self._reveal_download_status)
+
+    def _refresh_history_route(self, *_ignored):
+        # 紀錄視窗可保持開啟；主窗變更代理後，先中止舊路由再處理目前選取。
+        # A nonmodal history window follows live route changes, cancelling its old connection first.
+        if self._history_dialog is not None and not self._close_pending:
+            self._history_dialog.configure_route(self.warp_proxy_checkbox.isChecked(), self.warp_proxy_port_input.value())
 
     def refresh_current_media(self):
-        # 只根據已收到的事件繪圖；影片顯示類型提示，這裡不播放或額外抓取媒體。
-        # Render received events only; show a video placeholder without fetching or playing extra media.
+        # 主頁只呈現公開作者與檔名；本機圖片預覽集中在下載紀錄視窗。
+        # Keep the main page to the public author and filename; local images belong to download history.
         if not hasattr(self, "current_media_row"):
             return
         colors = theme_colors(self.theme_mode)
         self.current_media_row.setVisible(self._current_media is not None)
         self.current_avatar_label.setPixmap(avatar_pixmap(self._avatar_image, colors))
+        self.current_avatar_label.setToolTip(tr("作者公開頭像") if self._avatar_image is not None
+                                             else tr("未提供頭像，或頭像暫時無法載入。"))
         if self._current_media is not None:
             data = self._current_media
             handle = "@" + data["author_handle"] if data["author_handle"] else ""
@@ -569,19 +577,8 @@ class TwitterDownloader(QWidget):
             title = " · ".join(value for value in (name, handle) if value)
             self.current_author_label.set_literal(title or tr("作者資料未提供"))
             self.current_file_label.set_literal(data["display_path"] or data["filename"])
-        self.current_preview_container.setVisible(self._preview_kind is not None)
-        if self._preview_kind is None:
+        if self._current_media is None:
             self.status_box.setMaximumHeight(16777215)
-            return
-        captions = {"image": "最近下載：{filename}", "loading": "正在載入圖片預覽：{filename}",
-                    "video": "影片：{filename}", "unavailable": "無法顯示圖片預覽：{filename}"}
-        self.current_preview_caption.set_literal(tr(captions[self._preview_kind], filename=self._preview_display))
-        self.current_preview_label.setAccessibleName(tr("最近下載的圖片預覽") if self._preview_kind != "video"
-                                                     else tr("影片已下載；此處不播放影片。"))
-        self.current_preview_label.setStyleSheet(
-            f"background:{colors['log']};border:1px solid {colors['border']};border-radius:8px;")
-        self.current_preview_label.set_preview(self._preview_image,
-            line_icon("video" if self._preview_kind == "video" else "image", 42, colors["muted"]))
 
     def toggle_theme(self):
         set_window_theme(self, "dark" if self.theme_mode == "light" else "light")
@@ -618,9 +615,7 @@ class TwitterDownloader(QWidget):
 
     @pyqtSlot(str)
     def append_status(self, message: str):
-        self._status_entries.append((str(message), None))
-        del self._status_entries[:-2000]
-        self._append_status_text(translate_text(str(message)))
+        self._record_status(str(message), None)
 
     def _append_status_text(self, message):
         # Post text and filenames may contain markup; always display plain text.
@@ -660,6 +655,11 @@ class TwitterDownloader(QWidget):
         self.driver_check_btn.setEnabled(self._driver_thread is None and not self._close_pending)
         self.language_combo.setEnabled(not self._close_pending)
         self.history_action.setEnabled(not self._close_pending)
+        self.history_button.setEnabled(not self._close_pending)
+        redownload_active = self.is_downloading and bool(self._active_redownload_count)
+        self.open_download_folder_btn.setEnabled(not self._close_pending and not redownload_active)
+        self.open_download_folder_btn.setToolTip(tr("重新下載使用各項目原儲存資料夾；可從下載紀錄開啟。")
+            if redownload_active else tr("開啟下載資料夾"))
         self.update_action.setEnabled(self._update_thread is None and not self._close_pending)
         self.clear_login_action.setEnabled(editable and not self._login_busy)
         if self._history_dialog is not None:
@@ -771,9 +771,7 @@ class TwitterDownloader(QWidget):
         self._active_redownload_mode = options.redownload_mode
         self._avatar_loader.cancel()
         self._avatar_loader.configure(options.warp_proxy, options.warp_proxy_port)
-        self._preview_loader.cancel()
-        self._current_media = self._avatar_image = self._preview_image = self._preview_kind = None
-        self._preview_output_root = options.output_dir
+        self._current_media = self._avatar_image = None
         self.refresh_current_media()
         self.is_downloading = True
         self._run_state = "正在收集"
@@ -819,7 +817,6 @@ class TwitterDownloader(QWidget):
         incomplete = getattr(result, "incomplete_sources", [])
         if result.stopped:
             self._avatar_loader.cancel()
-            self._preview_loader.cancel()
         self.successful_downloads = result.downloaded
         if result.stopped:
             state = "🛑 已停止"
@@ -828,7 +825,7 @@ class TwitterDownloader(QWidget):
         else:
             state = "✅ 本輪處理完成"
         self._run_state = state.split(" ", 1)[-1]
-        self._set_result_detail('下載 {downloaded} 個媒體 · 略過 {skipped} · 失敗 {failed}\n處理 {posts} 則貼文 · 標籤／日期不符 {filtered}', downloaded=result.downloaded, skipped=result.skipped, failed=result.failed, posts=result.posts, filtered=result.filtered)
+        self._set_result_detail('✅ 下載 {downloaded} · ⏭️ 略過 {skipped} · ❌ 失敗 {failed}', downloaded=result.downloaded, skipped=result.skipped, failed=result.failed)
         self._refresh_summary()
         self._log('{state}：下載 {downloaded} 個媒體，略過 {skipped}，失敗 {failed}，標籤／日期不符 {filtered}；處理 {posts} 則貼文。', state=state, downloaded=result.downloaded, skipped=result.skipped, failed=result.failed, filtered=result.filtered, posts=result.posts)
         # 來源完整性與媒體下載結果分開報告，避免「檔案成功」掩蓋尚未查完的搜尋。
@@ -856,7 +853,6 @@ class TwitterDownloader(QWidget):
     @pyqtSlot(str)
     def _download_failed(self, message: str):
         self._avatar_loader.cancel()
-        self._preview_loader.cancel()
         self._run_state = "下載未完成"
         self._set_result_detail('請查看下方紀錄，修正問題後可重新開始。')
         self._refresh_summary()
@@ -878,7 +874,6 @@ class TwitterDownloader(QWidget):
         if self.is_downloading and not self._stop_event.is_set():
             self._stop_event.set()
             self._avatar_loader.cancel()
-            self._preview_loader.cancel()
             self._run_state = "正在安全停止…"
             self._log('🛑 正在停止；等待目前的連線結束後安全保存下載紀錄。')
             self._update_controls()
@@ -984,6 +979,8 @@ class TwitterDownloader(QWidget):
             self._history_dialog = HistoryDialog(parent=self, db_path=self.data_dir / "downloads.sqlite3", theme=self.theme_mode)
             self._history_dialog.retryRequested.connect(self._retry_history_items)
             self._history_dialog.redownloadRequested.connect(self._redownload_history_items)
+        self._history_dialog.configure_route(self.warp_proxy_checkbox.isChecked(), self.warp_proxy_port_input.value())
+        self._history_dialog.set_session_log(self._status_entries)
         self._history_dialog.set_retry_enabled(not self.is_downloading and not self._login_busy)
         self._history_dialog.refresh()
         self._history_dialog.show()
@@ -1160,6 +1157,20 @@ class TwitterDownloader(QWidget):
         self._update_controls()
         self._maybe_finish_close()
 
+    def open_download_folder(self):
+        # 明確點按才建立並開啟目前選擇的資料夾；交由 Qt 傳遞本機 URL，不組合 shell 指令。
+        # Create/open the selected folder only on explicit activation, using a local Qt URL instead of shell commands.
+        if self._close_pending or (self.is_downloading and self._active_redownload_count):
+            return
+        try:
+            folder = Path(self.download_path).expanduser()
+            folder.mkdir(parents=True, exist_ok=True)
+            folder = folder.resolve(strict=True)
+            if not folder.is_dir() or not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
+                raise OSError("Folder could not be opened")
+        except (OSError, ValueError, RuntimeError):
+            self._log("⚠️ 無法開啟下載資料夾，請確認路徑與存取權限。")
+
     def select_download_path(self):
         folder = QFileDialog.getExistingDirectory(self, tr("選擇下載資料夾"), self.download_path,
             options=QFileDialog.Option.DontUseNativeDialog)
@@ -1272,7 +1283,6 @@ class TwitterDownloader(QWidget):
         # 關閉分兩階段：先提出停止請求，背景工作結束後才保存偏好與釋放視窗。
         # Close in two stages: request cancellation, then save preferences and release widgets after workers stop.
         self._avatar_loader.cancel()
-        self._preview_loader.cancel()
         background_active = self._download_thread is not None or self._login_thread is not None or self._driver_thread is not None or self._update_thread is not None
         if not self._allow_close and background_active:
             event.ignore()
@@ -1295,7 +1305,6 @@ class TwitterDownloader(QWidget):
             if dialog is not None:
                 dialog.close()
         self._avatar_loader.close()
-        self._preview_loader.close()
         event.accept()
 
 

@@ -59,6 +59,10 @@ def apply_palette(widget, theme: str):
     # Native Qt widgets need explicit palettes too; stylesheets alone can retain OS colors.
     install_button_focus_visibility()
     c = theme_colors(theme)
+    # Qt 樣式表會重設部分子元件 palette；將框線 token 留在主題擁有者供原生覆繪讀取。
+    # Stylesheets may reset child palettes; retain frame tokens on the theme owner for native overlays.
+    widget.setProperty('fanartThemeAccent', c['accent'])
+    widget.setProperty('fanartThemeBorder', c['border'])
     palette = QPalette()
     roles = {
         QPalette.ColorRole.Window: "window", QPalette.ColorRole.WindowText: "ink",
@@ -90,32 +94,57 @@ def common_stylesheet(theme: str) -> str:
     # Share input/button/scrollbar rules; the controller distinguishes keyboard focus from clicks.
     c = theme_colors(theme)
     return f"""
-        QLabel, QLineEdit, QTextEdit, QDateEdit, QCheckBox, QPushButton, QToolButton,
-        QSpinBox, QComboBox {{ color: {c['ink']}; font-size: 14px; }}
+        QLabel, QLineEdit, QTextEdit, QPlainTextEdit, QDateEdit, QCheckBox, QRadioButton, QPushButton, QToolButton,
+        QSpinBox, QDoubleSpinBox, QComboBox {{ color: {c['ink']}; font-size: 14px; }}
         QLabel {{ background: transparent; }}
+        QLabel[keyboardFocus="true"]:focus {{ background: {c['accent_soft']}; outline: 1px solid {c['accent']}; }}
         QLabel[role="title"] {{ font-size: 28px; font-weight: 700; }}
         QLabel[role="brand"] {{ font-size: 23px; font-weight: 700; }}
         QLabel[role="section"] {{ font-size: 20px; font-weight: 700; }}
         QLabel[role="field"] {{ font-size: 15px; font-weight: 600; }}
         QLabel[role="muted"] {{ color: {c['muted']}; font-size: 13px; }}
-        QLineEdit, QTextEdit, QDateEdit, QSpinBox, QComboBox {{
+        QLineEdit, QTextEdit, QPlainTextEdit, QDateEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
             background: {c['input']}; border: 1px solid {c['border']}; border-radius: 7px;
             padding: 8px 10px; selection-background-color: {c['selection']}; selection-color: {c['ink']}; }}
-        QLineEdit:focus, QTextEdit:focus, QDateEdit:focus, QSpinBox:focus, QComboBox:focus {{
+        QLineEdit[keyboardFocus="true"]:focus, QTextEdit[keyboardFocus="true"]:focus,
+        QPlainTextEdit[keyboardFocus="true"]:focus, QDateEdit[keyboardFocus="true"]:focus,
+        QSpinBox[keyboardFocus="true"]:focus, QDoubleSpinBox[keyboardFocus="true"]:focus,
+        QComboBox[keyboardFocus="true"]:focus {{
             border: 2px solid {c['accent']}; padding: 7px 9px; }}
-        QLineEdit:disabled, QTextEdit:disabled, QDateEdit:disabled, QSpinBox:disabled {{
+        QLineEdit:disabled, QTextEdit:disabled, QPlainTextEdit:disabled, QDateEdit:disabled,
+        QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{
             color: {c['disabled_fg']}; background: {c['disabled_bg']}; border-color: {c['divider']}; }}
         QComboBox {{ padding-right: 28px; }}
-        QComboBox:focus {{ padding-right: 27px; }}
+        QComboBox[keyboardFocus="true"]:focus {{ padding-right: 27px; }}
         QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: top right;
             width: 24px; border: none; background: transparent; }}
         QComboBox QAbstractItemView {{ background: {c['input']}; color: {c['ink']};
             selection-background-color: {c['accent']}; selection-color: {c['accent_ink']};
             border: 1px solid {c['border']}; outline: none; padding: 4px; }}
-        QCheckBox {{ spacing: 9px; background: transparent; font-size: 14px; }}
+        QSpinBox, QDoubleSpinBox {{ padding-right: 36px; }}
+        QSpinBox[keyboardFocus="true"]:focus, QDoubleSpinBox[keyboardFocus="true"]:focus {{ padding-right: 35px; }}
+        QSpinBox::up-button, QDoubleSpinBox::up-button {{ subcontrol-origin: border; subcontrol-position: top right;
+            width: 30px; border: none; border-left: 1px solid {c['border']};
+            border-top-right-radius: 6px; background: {c['surface']}; }}
+        QSpinBox::down-button, QDoubleSpinBox::down-button {{ subcontrol-origin: border; subcontrol-position: bottom right;
+            width: 30px; border: none; border-left: 1px solid {c['border']}; border-top: 1px solid {c['border']};
+            border-bottom-right-radius: 6px; background: {c['surface']}; }}
+        QSpinBox::up-button:hover, QSpinBox::down-button:hover,
+        QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {{ background: {c['hover']}; }}
+        QSpinBox::up-button:pressed, QSpinBox::down-button:pressed,
+        QDoubleSpinBox::up-button:pressed, QDoubleSpinBox::down-button:pressed {{ background: {c['pressed']}; }}
+        QSpinBox::up-arrow, QSpinBox::down-arrow, QDoubleSpinBox::up-arrow, QDoubleSpinBox::down-arrow {{ width: 12px; height: 8px; }}
+        QSpinBox QLineEdit, QDoubleSpinBox QLineEdit, QComboBox QLineEdit {{
+            background: transparent; border: none; border-radius: 0px; padding: 0px; }}
+        QCheckBox, QRadioButton {{ spacing: 9px; background: transparent; font-size: 14px; }}
         QCheckBox[role="source"] {{ font-size: 16px; font-weight: 600; }}
-        QCheckBox:disabled {{ color: {c['disabled_fg']}; }}
-        QCheckBox:focus {{ outline: 1px solid {c['accent']}; }}
+        QCheckBox:disabled, QRadioButton:disabled {{ color: {c['disabled_fg']}; }}
+        QCheckBox[keyboardFocus="true"]:focus, QRadioButton[keyboardFocus="true"]:focus {{ outline: 1px solid {c['accent']}; }}
+        QToolButton {{ background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 5px; }}
+        QToolButton:hover {{ background: {c['hover']}; }}
+        QToolButton:pressed {{ background: {c['pressed']}; }}
+        QToolButton[keyboardFocus="true"]:focus {{ border-color: {c['accent']}; }}
+        QToolButton:disabled {{ color: {c['disabled_fg']}; }}
         QPushButton {{ color: {c['ink']}; background: {c['input']}; border: 1px solid {c['border']};
             border-radius: 7px; padding: 8px 14px; min-height: 20px; font-size: 14px; }}
         QPushButton:hover {{ background: {c['hover']}; border-color: {c['accent']}; }}
@@ -126,6 +155,7 @@ def common_stylesheet(theme: str) -> str:
             color: {c['accent_ink']}; font-weight: 600; }}
         QPushButton[variant="primary"]:hover {{ background: {c['accent_hover']}; border-color: {c['accent_hover']}; }}
         QPushButton[variant="primary"]:pressed {{ background: {c['accent_pressed']}; }}
+        QPushButton[variant="primary"][keyboardFocus="true"]:focus {{ border-color: {c['ink']}; }}
         QPushButton:disabled, QPushButton[variant="primary"]:disabled {{ color: {c['disabled_fg']};
             background: {c['disabled_bg']}; border-color: {c['disabled_bg']}; }}
         QScrollArea {{ background: transparent; border: none; }}
@@ -152,7 +182,7 @@ def gallery_stylesheet(theme: str) -> str:
     return common_stylesheet(theme) + f"""
         QWidget#galleryWindow {{ background: {c['window']}; color: {c['ink']}; }}
         QLabel#runState {{ font-size: 16px; }}
-        QLabel#tagSummary {{ color: {c['chip_fg']}; background: {c['chip_bg']}; border: 1px solid {c['chip_border']};
+        QLabel[role="tagChip"] {{ color: {c['chip_fg']}; background: {c['chip_bg']}; border: 1px solid {c['chip_border']};
             border-radius: 13px; padding: 6px 12px; font-size: 14px; font-weight: 600; }}
         QFrame#galleryRule {{ background: {c['divider']}; border: none; }}
         QFrame#searchSurface {{ background: {c['surface']}; border-radius: 12px; }}
@@ -162,6 +192,8 @@ def gallery_stylesheet(theme: str) -> str:
         QTextEdit#downloadLog {{ background: {c['log']}; border: 1px solid {c['border']};
             border-radius: 10px; padding: 12px; font-size: 13px; }}
         QPushButton#chooseDestination {{ border: none; border-left: 1px solid {c['border']}; border-radius: 0px; padding: 8px; }}
+        QPushButton#chooseDestination[keyboardFocus="true"]:focus {{ border: 2px solid {c['accent']};
+            background: {c['accent_soft']}; padding: 6px 6px 6px 7px; }}
         QToolButton#advancedToggle {{ color: {c['ink']}; border: none; background: transparent;
             text-align: left; padding: 8px 0px; font-size: 15px; }}
         QToolButton#advancedToggle:hover {{ color: {c['accent']}; }}

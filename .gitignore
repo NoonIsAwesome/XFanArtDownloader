@@ -93,6 +93,8 @@ test-results/
 *.netlog.json
 /secrets/
 /credentials/
+r2-credentials*.clixml
+r2-credentials*.tmp
 /logs/
 *.log
 .vscode/settings.json

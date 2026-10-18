@@ -287,6 +287,9 @@ class AvatarTests(unittest.TestCase):
                 self.assertEqual(window.current_author_label.literal_text, "<b>Painter</b> · @artist")
                 self.assertEqual(window.current_author_label.textFormat(), Qt.TextFormat.PlainText)
                 self.assertEqual(window.current_file_label.literal_text, "artist\\123_1.png")
+                self.assertEqual(window._current_media["state"], "downloading")
+                for name in ("_preview_loader", "current_preview_container", "current_preview_label", "current_preview_caption"):
+                    self.assertFalse(hasattr(window, name), name)
                 self.assertEqual(len(window._avatar_loader.manager.requests), 1)
                 window._download_worker = object()  # Simulate the next collection run.
                 window._media_progress(worker, {**event, "author_handle":"stale"})

@@ -14,7 +14,7 @@ import re
 from PyQt6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, QUrl
 from PyQt6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QMenu, QProxyStyle, QPushButton,
+    QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QMenu, QProxyStyle, QPushButton,
     QScrollArea, QSizePolicy, QStyle, QStyleOptionButton, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -23,6 +23,7 @@ from ui_theme import apply_dialog_theme, apply_palette, gallery_stylesheet, them
 from i18n import tr, language_mode
 from resources_rc import get_icon_path
 from app_version import APP_VERSION
+from tag_chips import TagChips
 
 
 TEAL = "#176C68"
@@ -148,9 +149,9 @@ class PreviewLabel(QLabel):
 
 
 class GalleryControlStyle(QProxyStyle):
-    # 僅自繪勾選記號，其餘狀態與操作仍交由 Qt；避免整個控制項重造後失去無障礙支援。
+    # 僅自繪勾選記號，其餘狀態與操作仍交由 Qt，保留原生無障礙支援。
     # Customize only the check mark and preserve native Qt interaction and accessibility.
-    """Keep real Qt checkbox behavior while drawing a clear teal check mark."""
+    """Keep native Qt checkbox behavior while drawing a clear teal check mark."""
 
     def pixelMetric(self, metric, option=None, widget=None):
         if metric in (QStyle.PixelMetric.PM_IndicatorWidth, QStyle.PixelMetric.PM_IndicatorHeight):
@@ -202,7 +203,7 @@ def line_icon(name: str, size: int = 20, color: str = TEAL) -> QIcon:
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor("#F48472"))
         painter.drawEllipse(QPointF(16.1, 8.2), 2.2, 2.2)
-    elif name == "folder":
+    elif name in ("folder", "folder-open"):
         path = QPainterPath(QPointF(3, 6.5))
         path.lineTo(9, 6.5)
         path.lineTo(11.4, 9)
@@ -211,7 +212,16 @@ def line_icon(name: str, size: int = 20, color: str = TEAL) -> QIcon:
         path.lineTo(3, 19)
         path.closeSubpath()
         painter.drawPath(path)
-        painter.drawLine(QPointF(3, 10), QPointF(20.5, 10))
+        if name == "folder-open":
+            # 展開的前蓋讓「開啟」與「選擇位置」具有不同的圖示。
+            # An open front flap distinguishes opening a folder from choosing its location.
+            front = QPainterPath(QPointF(3, 10))
+            front.lineTo(22, 10)
+            front.lineTo(19, 19)
+            front.lineTo(3, 19)
+            painter.drawPath(front)
+        else:
+            painter.drawLine(QPointF(3, 10), QPointF(20.5, 10))
     elif name == "login":
         painter.drawRoundedRect(QRectF(12, 4, 8, 16), 1.5, 1.5)
         painter.drawLine(QPointF(3, 12), QPointF(15, 12))
@@ -342,10 +352,13 @@ def apply_gallery_theme(window, mode=None):
         window._gallery_control_style.colors = colors
         for checkbox in window.findChildren(QCheckBox):
             checkbox.update()
+        for spinbox in window.findChildren(QAbstractSpinBox):
+            spinbox.update()
     for attr, name, color in (
         ("cookie_btn", "login", "accent_ink"), ("cookie_save_btn", "save", "accent"),
         ("cookie_import_btn", "folder", "accent"),
         ("choose_path_btn", "folder", "accent"), ("download_btn", "download", "accent_ink"),
+        ("open_download_folder_btn", "folder-open", "accent"),
         ("stop_btn", "stop", "muted"), ("about_btn", "info", "accent"),
         ("help_btn", "info", "accent"), ("tools_btn", "more", "accent"),
     ):
@@ -416,7 +429,7 @@ def refresh_gallery_summary(window):
     except (TypeError, ValueError):
         tags = ()
     if tags:
-        window.tag_summary_label.setText("  ".join("#" + tag.lstrip("#") for tag in tags))
+        window.tag_summary_label.set_tags(tuple("#" + tag.lstrip("#") for tag in tags))
     else:
         window.tag_summary_label.setText(tr('請檢查標籤') if text else tr('尚未填寫標籤'))
     window.tag_summary_label.setToolTip(window.tag_summary_label.text())
@@ -676,14 +689,10 @@ def build_gallery_layout(window):
     sidebar.setContentsMargins(0, 0, 0, 0)
     sidebar.setSpacing(13)
     sidebar.addWidget(_label("本次收集", "section"))
-    tag_row = QHBoxLayout()
-    window.tag_summary_label = _label("", wrap=True)
+    window.tag_summary_label = TagChips()
     window.tag_summary_label.setProperty("i18nSkip", True)
     window.tag_summary_label.setObjectName("tagSummary")
-    window.tag_summary_label.setMaximumHeight(78)
-    tag_row.addWidget(window.tag_summary_label)
-    tag_row.addStretch(1)
-    sidebar.addLayout(tag_row)
+    sidebar.addWidget(window.tag_summary_label)
     window.run_state_label = _label("尚未開始")
     window.run_state_label.setObjectName("runState")
     sidebar.addWidget(window.run_state_label)
@@ -713,9 +722,25 @@ def build_gallery_layout(window):
     window.choose_path_btn.setFixedWidth(42)
     window.choose_path_btn.setMinimumHeight(42)
     destination_row.addWidget(window.choose_path_btn)
+    # 明確區分選擇位置與開啟位置；一般下載進行中仍可查看資料夾。
+    # Separate choosing the destination from opening it; normal downloads can keep running.
+    window.open_download_folder_btn = QPushButton(tr("開啟"))
+    window.open_download_folder_btn.setIcon(line_icon("folder-open"))
+    window.open_download_folder_btn.setAccessibleName(tr("開啟下載資料夾"))
+    window.open_download_folder_btn.setToolTip(tr("開啟下載資料夾"))
+    window.open_download_folder_btn.setMinimumHeight(42)
+    destination_row.addWidget(window.open_download_folder_btn)
     sidebar.addWidget(destination)
     sidebar.addWidget(_rule())
-    sidebar.addWidget(_label("下載紀錄", "field"))
+    # 紀錄與預覽直接可見，不再只藏在頂端的更多選單。
+    # Keep history and previews discoverable instead of placing the entry only in the overflow menu.
+    history_heading = QHBoxLayout()
+    history_heading.addWidget(_label("下載紀錄", "field"), 1)
+    window.history_button = QPushButton(tr("查看紀錄與預覽"))
+    window.history_button.setAccessibleName(tr("查看紀錄與預覽"))
+    window.history_button.setToolTip(tr("瀏覽已下載項目、作者資訊與圖片預覽"))
+    history_heading.addWidget(window.history_button)
+    sidebar.addLayout(history_heading)
     window.current_media_row = QWidget()
     # 公開頭像與作者文字只顯示當前下載項目，不會使用登入 Cookie 去抓頭像。
     # Show the current author using a public avatar request without login cookies.
@@ -737,24 +762,6 @@ def build_gallery_layout(window):
     current_row.addLayout(current_text, 1)
     window.current_media_row.hide()
     sidebar.addWidget(window.current_media_row)
-    window.current_preview_container = QWidget()
-    # 最近下載預覽只接收已提交的本機圖片；影片使用提示圖示，避免額外自動播放。
-    # Preview committed local images only; use a placeholder instead of automatically playing videos.
-    preview_layout = QVBoxLayout(window.current_preview_container)
-    preview_layout.setContentsMargins(0, 0, 0, 0)
-    preview_layout.setSpacing(5)
-    window.current_preview_caption = ElidedLabel()
-    window.current_preview_caption.elide_mode = Qt.TextElideMode.ElideMiddle
-    window.current_preview_caption.setProperty("role", "muted")
-    preview_layout.addWidget(window.current_preview_caption)
-    window.current_preview_label = PreviewLabel()
-    window.current_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    window.current_preview_label.setFixedHeight(144)
-    window.current_preview_label.setMinimumWidth(0)
-    window.current_preview_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-    preview_layout.addWidget(window.current_preview_label)
-    window.current_preview_container.hide()
-    sidebar.addWidget(window.current_preview_container)
     # 空白狀態與實際紀錄共用位置，首次開啟時也能看懂下一步要做什麼。
     # Share the same area for the empty-state guidance and the active download log.
     log = QWidget()
@@ -905,6 +912,8 @@ def build_gallery_layout(window):
     root.addLayout(footer)
     for checkbox in window.findChildren(QCheckBox):
         checkbox.setStyle(window._gallery_control_style)
+    for spinbox in window.findChildren(QAbstractSpinBox):
+        spinbox.setStyle(window._gallery_control_style)
     for editor in (window.hashtag_input, window.authors_input, window.tweet_urls_input):
         palette = editor.palette()
         palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#586971"))

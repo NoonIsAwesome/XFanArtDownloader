@@ -13,7 +13,9 @@ from pathlib import Path
 import re
 import sqlite3
 import time
+import unicodedata
 from typing import Any, Iterator
+from urllib.parse import unquote, urlsplit
 
 
 def _now() -> str:
@@ -625,6 +627,65 @@ def _local_history_target(row, kind):
     return None
 
 
+def _history_presentation(metadata, display_name, path):
+    # SQL 只回傳顯示所需欄位，完整 metadata、貼文及帳密不進入紀錄視窗。
+    # Project public presentation fields inside SQL; raw metadata/posts/credentials never enter the dialog.
+    try:
+        data = json.loads(metadata)
+    except (TypeError, ValueError):
+        data = {}
+    data = data if isinstance(data, dict) else {}
+    author = data.get("author")
+    author = author if isinstance(author, dict) else {}
+    name = author.get("nick") or author.get("name") or display_name
+    name = name if isinstance(name, str) else ""
+    name = " ".join("".join(char for char in name if not unicodedata.category(char).startswith("C")).split())[:100]
+    avatar = author.get("profile_image")
+    # 與公開頭像載入器相同的 HTTPS/CDN 邊界；這裡保持 storage 不依賴 Qt。
+    # Match the public avatar loader's HTTPS/CDN boundary without making storage depend on Qt.
+    valid = False
+    if isinstance(avatar, str) and avatar and len(avatar) <= 8192 and not any(ord(char) < 33 for char in avatar):
+        try:
+            url = urlsplit(avatar)
+            decoded = unquote(url.path)
+            valid = (url.scheme == "https" and not url.username and not url.password
+                     and url.port is None and not url.fragment
+                     and url.netloc in {"pbs.twimg.com", "abs.twimg.com"}
+                     and "\\" not in decoded and not any(part in {".", ".."} for part in decoded.split("/"))
+                     and ((url.hostname == "pbs.twimg.com" and decoded.startswith("/profile_images/") and len(decoded) > 16)
+                          or (url.hostname == "abs.twimg.com" and decoded.startswith("/sticky/default_profile_images/")
+                              and len(decoded) > len("/sticky/default_profile_images/"))))
+        except (TypeError, ValueError):
+            pass
+    extension = str(data.get("extension", "")).casefold().lstrip(".")
+    suffix = Path(str(path or "")).suffix.casefold().lstrip(".")
+    kind = "video" if extension in {"mp4", "webm"} or suffix in {"mp4", "webm"} else "image" if (suffix or extension) in {"png", "jpg", "jpeg", "webp", "gif", "avif"} else "unknown"
+    return _json({"author_name": name, "avatar_url": avatar if valid else None, "media_type": kind})
+
+
+def _history_preview_allowed(row):
+    # 原儲存目錄若已被改成 junction/symlink，預覽不可把其解析目的地當成新邊界。
+    # A replaced/junction output root must not silently become a new preview boundary.
+    try:
+        root = Path(row["target_dir"])
+        path = Path(row["path"])
+        if (not root.is_absolute() or not path.is_absolute()
+                or root.absolute() != root.resolve(strict=True)
+                or not path.is_relative_to(root)):
+            return False
+        # Windows 的 junction 不一定由 is_symlink() 辨識，因此也檢查 reparse 屬性。
+        # Windows junctions may not be symlinks; reject the reparse attribute along the saved path.
+        for candidate in (path, *path.parents):
+            info = candidate.lstat()
+            if candidate.is_symlink() or getattr(info, "st_file_attributes", 0) & 0x400:
+                return False
+            if candidate == root:
+                return True
+        return False
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+
+
 def fetch_history(db_path, *, status="all", search="", page=1, page_size=40):
     page_size = max(1, min(100, int(page_size)))
     result = {"items": [], "total": 0, "page": 1, "page_size": page_size}
@@ -635,6 +696,7 @@ def fetch_history(db_path, *, status="all", search="", page=1, page_size=40):
             return result
         db.create_function("history_filename", 3, _history_filename, deterministic=True)
         db.create_function("history_casefold", 1, lambda value: str(value or "").casefold(), deterministic=True)
+        db.create_function("history_presentation", 3, _history_presentation, deterministic=True)
         filename = "history_filename(m.path, m.post_id, m.metadata)"
         conditions, values = [], []
         if status != "all":
@@ -648,8 +710,12 @@ def fetch_history(db_path, *, status="all", search="", page=1, page_size=40):
         base = " FROM media m JOIN posts p ON p.post_id = m.post_id"
         total = db.execute("SELECT COUNT(*)" + base + where, values).fetchone()[0]
         page = max(1, min(int(page), max(1, (total + page_size - 1) // page_size)))
+        authors = _has_table(db, "authors")
+        display_name = "COALESCE(a.display_name, '')" if authors else "''"
+        author_join = " LEFT JOIN authors a ON a.username = p.author COLLATE NOCASE" if authors else ""
         rows = db.execute("SELECT m.media_key, m.post_id, m.state, m.path, m.target_dir, m.error, "
-            f"m.updated_at, m.downloaded_at, p.author, {filename} AS filename" + base + where
+            f"m.updated_at, m.downloaded_at, p.author, {filename} AS filename, "
+            f"history_presentation(m.metadata, {display_name}, m.path) AS presentation" + base + author_join + where
             + " ORDER BY m.updated_at DESC, m.media_key LIMIT ? OFFSET ?",
             (*values, page_size, (page - 1) * page_size)).fetchall()
         latest = {}
@@ -664,10 +730,12 @@ def fetch_history(db_path, *, status="all", search="", page=1, page_size=40):
             latest = {row["media_key"]: dict(row) for row in events}
         for row in rows:
             item = dict(row)
+            item.update(json.loads(item.pop("presentation")))
             item["status"] = item["state"]
             item["safe_file_path"] = str(path) if (path := _local_history_target(row, "file")) else None
             item["safe_folder_path"] = str(path) if (path := _local_history_target(row, "folder")) else None
             item["file_exists"] = bool(item["safe_file_path"])
+            item["preview_allowed"] = bool(item["safe_file_path"] and _history_preview_allowed(row))
             item["display_path"] = item["filename"]
             item["post_url"] = ("https://x.com/i/web/status/" + str(item["post_id"])) if re.fullmatch(r"[0-9]{1,30}", str(item["post_id"])) else None
             item["latest_redownload"] = latest.get(item["media_key"])

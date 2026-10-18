@@ -473,13 +473,16 @@ class EngineTests(unittest.TestCase):
         self.assertEqual((events[1]["filename"], events[1]["display_path"], events[1]["media_type"]),
                          ("1001_1.png", "1001_1.png", "image"))
         self.assertEqual(Path(events[1]["path"]).read_bytes(), png_bytes())
-        success = [line for line in self.logs if line.startswith("🖼️")]
-        self.assertEqual(success, ["🖼️ 已下載：1001_1.png"])
+        success = [line for line in self.logs if line.startswith("✅ 🖼️")]
+        self.assertEqual(success, ["✅ 🖼️ 已下載：1001_1.png"])
         self.assertNotIn(str(self.root), " ".join(self.logs))
         events.clear()
         second = DownloadEngine(self.options(folder_by_user=False), source=Source([(url, metadata)]),
             session=Session(), log=self.logs.append, progress=events.append).run()
-        self.assertEqual((second.skipped, events), (1, []))
+        self.assertEqual((second.downloaded, second.skipped), (0, 1))
+        self.assertEqual([event["state"] for event in events], ["skipped"])
+        self.assertEqual(Path(events[0]["path"]).read_bytes(), png_bytes())
+        self.assertIn("⏭️ 🖼️ 已存在，略過：1001_1.png", self.logs)
 
     def test_progress_callback_failure_cannot_turn_completed_media_into_failure(self):
         def broken_callback(event):
@@ -487,7 +490,7 @@ class EngineTests(unittest.TestCase):
         result = DownloadEngine(self.options(), source=Source([media()]), session=Session(),
             log=self.logs.append, progress=broken_callback).run()
         self.assertEqual((result.downloaded, result.failed), (1, 0))
-        self.assertIn("🖼️ 已下載：artista\\1001_1.png", self.logs)
+        self.assertIn("✅ 🖼️ 已下載：artista\\1001_1.png", self.logs)
         with Store(self.root / "state.sqlite3") as store:
             self.assertEqual(store.media_state("twitter:1001:1")["state"], "downloaded")
 
@@ -740,7 +743,7 @@ class ThreadEngineTests(unittest.TestCase):
             session=MixedSession(), log=self.logs.append, progress=events.append).run()
         self.assertEqual((result.downloaded, result.errors), (2, []))
         self.assertEqual(len(list((self.root / "downloads").rglob("*.mp4"))), 1)
-        self.assertIn("🎬 已下載：artista\\1002_1.mp4", self.logs)
+        self.assertIn("✅ 🎬 已下載：artista\\1002_1.mp4", self.logs)
         self.assertEqual([event["media_type"] for event in events if event["state"] == "downloaded"],
                          ["image", "video"])
 

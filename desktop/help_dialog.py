@@ -64,7 +64,8 @@ SEARCH_LIMIT_HELP = (
 )
 PREVIEW_HELP = (
     "目前作者的公開頭像請求不帶登入 Cookie；讀取失敗會顯示替代圖，不影響下載。"
-    "圖片預覽只讀已完成的本機下載，不會重新下載或上傳；影片不會自動播放。\n"
+    "主頁只顯示作者與簡要進度；按「查看紀錄與預覽」，可在「紀錄與圖片預覽」選取一筆完成紀錄預覽本機圖片；「詳細下載狀況」顯示完整執行紀錄與來源進度。"
+    "預覽不會重新下載或上傳；影片不會自動播放。\n"
     "紀錄中的 🖼️／🎬 分別表示圖片與影片。啟用作者資料夾時，簡短路徑顯示「作者帳號\\檔名」；"
     "關閉時只顯示檔名。"
 )
@@ -339,7 +340,7 @@ class UsageGuideDialog(QDialog):
                 border-color: {c['accent']}; font-weight: 600; }}
             QPushButton#usageGuideClose:hover {{ background: {c['accent_hover']}; border-color: {c['accent_hover']}; }}
             QPushButton#usageGuideClose:pressed {{ background: {c['accent_pressed']}; }}
-            QPushButton#usageGuideClose:focus {{ border: 2px solid {c['ink']}; padding: 7px 13px; }}
+            QPushButton#usageGuideClose[keyboardFocus="true"]:focus {{ border: 2px solid {c['ink']}; padding: 7px 13px; }}
         """)
         self.guide_icon.setPixmap(line_icon("info", 26, c["accent"]).pixmap(QSize(26, 26)))
 

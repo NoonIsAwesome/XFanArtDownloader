@@ -12,7 +12,7 @@ from PyQt6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPalette, QPen
 from PyQt6.QtWidgets import (
     QAbstractSpinBox, QCalendarWidget, QDateEdit, QDialog, QFrame,
     QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QSpinBox,
-    QToolButton, QVBoxLayout, QWidget,
+    QStyle, QStyleOptionSpinBox, QToolButton, QVBoxLayout, QWidget,
 )
 from i18n import tr, locale as ui_locale
 
@@ -65,6 +65,39 @@ def _font(widget: QWidget):
     font.setFamilies(["Microsoft JhengHei UI", "Segoe UI"])
     font.setPointSizeF(10)
     widget.setFont(font)
+
+
+class GallerySpinBox(QSpinBox):
+    """Native numeric input with explicit chevrons over its styled step buttons."""
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        # 樣式表在 Windows 可能不呼叫基底的箭頭繪製；只疊畫符號，點擊與連按仍由 Qt 處理。
+        # Windows stylesheets may bypass base-style arrows; overlay only glyphs and keep Qt stepping/repeat.
+        if self.buttonSymbols() == QAbstractSpinBox.ButtonSymbols.NoButtons:
+            return
+        option = QStyleOptionSpinBox()
+        self.initStyleOption(option)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for control, flag, direction in (
+            (QStyle.SubControl.SC_SpinBoxUp, QAbstractSpinBox.StepEnabledFlag.StepUpEnabled, -1),
+            (QStyle.SubControl.SC_SpinBoxDown, QAbstractSpinBox.StepEnabledFlag.StepDownEnabled, 1),
+        ):
+            if not option.subControls & control:
+                continue
+            rect = self.style().subControlRect(QStyle.ComplexControl.CC_SpinBox, option, control, self)
+            if rect.isEmpty():
+                continue
+            group = QPalette.ColorGroup.Active if self.isEnabled() and option.stepEnabled & flag else QPalette.ColorGroup.Disabled
+            painter.setPen(QPen(self.palette().color(group, QPalette.ColorRole.Text), 1.8,
+                                Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            center = QRectF(rect).center()
+            apex = QPointF(center.x(), center.y() + direction * 1.5)
+            painter.drawLine(QPointF(center.x() - 3.5, center.y() - direction * 1.5), apex)
+            painter.drawLine(apex, QPointF(center.x() + 3.5, center.y() - direction * 1.5))
+        painter.end()
 
 
 # 保留 Qt 的日期與範圍判斷，只自行繪製選取、今天與相鄰月份的外觀。
@@ -170,7 +203,7 @@ class _DatePopup(QFrame):
             self.month_actions.append(action)
         self.month_button.setMenu(self.month_menu)
         self.month_button.setMinimumWidth(67)
-        self.year_input = QSpinBox()
+        self.year_input = GallerySpinBox()
         self.year_input.setObjectName("calendarYear")
         self.year_input.setAccessibleName("年份，可直接輸入")
         self.year_input.setToolTip("直接輸入年份，按 Enter 確認")
@@ -290,7 +323,8 @@ class _DatePopup(QFrame):
             QToolButton {{ min-height: 20px; }}
             QToolButton:hover, QPushButton:hover {{ background: {c['hover']}; border-color: {c['accent']}; }}
             QToolButton:pressed, QPushButton:pressed {{ background: {c['pressed']}; }}
-            QToolButton:focus, QPushButton:focus, QSpinBox:focus {{ border-color: {c['accent']}; }}
+            QToolButton[keyboardFocus="true"]:focus, QPushButton[keyboardFocus="true"]:focus,
+            QSpinBox[keyboardFocus="true"]:focus {{ border-color: {c['accent']}; }}
             QToolButton:disabled, QPushButton:disabled {{ color: {c['disabled_fg']};
                 background: {c['disabled_bg']}; border-color: {c['border']}; }}
             QToolButton::menu-indicator {{ image: none; width: 0px; }}
@@ -399,7 +433,7 @@ class GalleryDateEdit(QDateEdit):
         self.setStyleSheet(f"""
             QDateEdit#galleryDateEdit {{ color: {c['ink']}; background: {c['input']};
                 border: 1px solid {c['border']}; border-radius: 7px; padding: 7px 36px 7px 9px; font-size: 14px; }}
-            QDateEdit#galleryDateEdit:focus {{ border: 2px solid {c['accent']}; padding: 6px 35px 6px 8px; }}
+            QDateEdit#galleryDateEdit[keyboardFocus="true"]:focus {{ border: 2px solid {c['accent']}; padding: 6px 35px 6px 8px; }}
             QDateEdit#galleryDateEdit:disabled {{ color: {c['disabled_fg']}; background: {c['disabled_bg']}; border-color: {c['border']}; }}
             QDateEdit#galleryDateEdit::drop-down, QDateEdit#galleryDateEdit::up-button,
             QDateEdit#galleryDateEdit::down-button {{ width: 0px; border: none; background: transparent; }}
@@ -411,7 +445,7 @@ class GalleryDateEdit(QDateEdit):
             QToolButton#galleryCalendarButton {{ background: transparent; border: none; border-radius: 5px; padding: 0px; }}
             QToolButton#galleryCalendarButton:hover {{ background: {c['hover']}; }}
             QToolButton#galleryCalendarButton:pressed {{ background: {c['pressed']}; }}
-            QToolButton#galleryCalendarButton:focus {{ border: 1px solid {c['accent']}; }}
+            QToolButton#galleryCalendarButton[keyboardFocus="true"]:focus {{ border: 1px solid {c['accent']}; }}
         """)
         self.calendar_button.setIcon(_icon("calendar", c["accent"] if self.isEnabled() else c["disabled_fg"], 18))
         self.popup.set_theme(self._theme)
@@ -605,7 +639,7 @@ class UserNoticeDialog(QDialog):
                 border: 1px solid {c['accent']}; border-radius: 7px; padding: 9px 18px; font-size: 14px; font-weight: 600; }}
             QPushButton#noticeAccept:hover {{ background: {c['accent_hover']}; border-color: {c['accent_hover']}; }}
             QPushButton#noticeAccept:pressed {{ background: {c['accent_pressed']}; border-color: {c['accent_pressed']}; }}
-            QPushButton#noticeAccept:focus {{ border: 2px solid {c['ink']}; padding: 8px 17px; }}
+            QPushButton#noticeAccept[keyboardFocus="true"]:focus {{ border: 2px solid {c['ink']}; padding: 8px 17px; }}
         """)
         self.notice_icon.setPixmap(_icon("info", c["accent_soft_ink"], 28).pixmap(QSize(28, 28)))
         for bullet in self.bullets:

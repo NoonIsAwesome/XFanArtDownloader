@@ -60,6 +60,31 @@ class MainToolsTests(unittest.TestCase):
         other.close()
         other.deleteLater()
 
+    def test_open_destination_uses_a_local_url_and_creates_only_the_selected_folder(self):
+        # 特殊字元仍是資料夾名稱，不會變成 shell 指令。
+        # Special characters remain part of a local folder name, never a shell command.
+        folder = self.root / 'art work; sample'
+        self.window.download_path = str(folder)
+        self.window.is_downloading = True
+        with patch.object(main.QDesktopServices, 'openUrl', return_value=True) as opened:
+            self.window.open_download_folder_btn.click()
+        self.assertTrue(folder.is_dir())
+        self.assertEqual(opened.call_count, 1)
+        url = opened.call_args.args[0]
+        self.assertTrue(url.isLocalFile())
+        self.assertEqual(Path(url.toLocalFile()), folder.resolve())
+        self.window.is_downloading = False
+
+    def test_open_destination_failure_preserves_an_existing_file(self):
+        occupied = self.root / 'existing-file'
+        occupied.write_bytes(b'keep original')
+        self.window.download_path = str(occupied)
+        with patch.object(main.QDesktopServices, 'openUrl') as opened:
+            self.window.open_download_folder()
+        opened.assert_not_called()
+        self.assertEqual(occupied.read_bytes(), b'keep original')
+        self.assertIn('無法開啟下載資料夾', self.window.status_box.toPlainText())
+
     def test_cancel_clear_login_preserves_local_files_and_starts_no_worker(self):
         self.window.data_dir.mkdir(parents=True)
         self.window.cookie_file.write_text('synthetic test value', encoding='utf-8')
