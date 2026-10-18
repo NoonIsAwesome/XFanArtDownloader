@@ -8,6 +8,7 @@
 | --- | --- |
 | `desktop/main.py` | Qt 視窗控制、背景執行緒與停止／關閉協調 |
 | `desktop/ui_design.py`、`desktop/ui_theme.py`、`desktop/gallery_widgets.py` | 既有畫廊介面、明暗主題與原生日曆／提醒 |
+| `desktop/flow_layout.py`、`desktop/tag_chips.py` | 依元件實際寬度換行的共用排版；標籤可省略，登入按鈕保留全文 / Shared measured wrapping for tag chips and full-text login actions |
 | `desktop/focus_visibility.py` | 區分滑鼠與鍵盤操作的按鈕焦點提示；保留 Qt 焦點、Tab 順序與原生啟用行為 |
 | `desktop/login_browser.py` | 普通瀏覽器登入、專用設定檔占用與程序擁有權驗證、X Cookie 安全儲存 |
 | `tools/save_cookies.py` | 相同登入流程的選用命令列入口 |
@@ -20,7 +21,7 @@
 | `desktop/network.py` | 單次工作可選的本機 WARP SOCKS5 路徑、連接埠驗證與不含帳密的可用性檢查 |
 | `desktop/resources_rc.py` | 從 `assets/` 或 PyInstaller 目錄取得圖片，無內嵌 Base64 或共用暫存圖片 |
 | `desktop/author_dialog.py` | 使用者主動開啟的作者資訊；關閉 App 不會強制顯示 |
-| `desktop/help_dialog.py` | 可重開的使用說明與首次引導，沿用主視窗主題 |
+| `desktop/help_dialog.py` | 手動開啟且可重看的使用說明，沿用主視窗主題 |
 | `desktop/author_avatar.py` | 非同步讀取公開作者頭像，驗證 CDN／路徑，限制流量、尺寸、時間與記憶體快取，不帶認證 |
 | `desktop/media_preview.py` | 執行緒池讀取已完成的本機圖片，驗證下載根目錄及檔案特徵，限制解碼量並捨棄過期結果 |
 | `desktop/driver_manager.py` | 舊版 ChromeDriver 的相容更新工具；新版下載與登入不依賴它 |
@@ -101,15 +102,15 @@ SQLite schema 3 以新增表保存工作、來源狀態、搜尋已見貼文與�
 
 `history_dialog.py` 透過 `storage.py` 的唯讀查詢顯示分頁媒體與來源進度，不建立缺失的資料庫，也不變更使用者紀錄。SQLite 自身仍可管理讀取所需的輔助檔案。查詢在執行緒池內完成，晚到結果不得覆蓋新篩選。開檔／開目錄前重新驗證保存的下載根目錄、實際路徑及媒體格式；外部文字使用純文字或轉義過的提示。
 
-主頁只保留作者、頭像、檔名與工作進度，不解碼媒體圖片。圖片預覽集中由紀錄視窗的 `MediaPreviewLoader` 處理：只有單筆已完成且仍位於原儲存目錄的圖片能解碼，切換選取或關窗會取消舊結果。`AvatarLoader` 僅讀公開頭像、不帶 Cookie，紀錄視窗也同步遵循主頁的 WARP 路由。
+主視窗維持一個 `QTabWidget`：「下載設定」放置來源、位置、進階設定與右側的登入操作；「下載狀況與預覽」直接嵌入 `HistoryPanel(QWidget)`，並排完整日誌與紀錄／預覽，不再嵌套分頁或另開紀錄視窗。頂列只保留語言／主題與更多功能，使用說明及作者資訊是選單內的 `QAction`，不保留隱藏按鈕。開始／停止與簡要回饋位於分頁之外。有效工作開始可切換至狀況頁，後續事件不改變使用者所在分頁。
 
-紀錄視窗維持兩個分頁：「紀錄與圖片預覽」顯示媒體與預覽；「詳細下載狀況」合併本次執行的完整日誌與既有工作／來源進度。主控制器 `_status_entries` 保存最多 2000 筆原始範本與參數，視窗首次開啟／重開時同步快照，已建立後持續接收新增訊息，隱藏時也不漏記。主頁另維護有界的簡要日誌，只排除明確的來源列舉訊息，保留成功／略過、錯誤、登入與安全提示；兩種檢視都由原始範本重譯，不把翻譯後文字當成資料來源。
+主控制器 `_status_entries` 保存最多 2000 筆原始範本與參數，狀況頁的共用 `QPlainTextEdit` 持續接收完整訊息，隱藏時也不漏記；切換語言從原始範本重譯。`HistoryPanel` 的工作／來源進度可在同頁展開，下載／略過事件最多每秒合併一次可見紀錄查詢，刷新保留選取及目前預覽。隱藏狀況頁只取消介面查詢／預覽，不停止下載。`HistoryDialog` 保留為舊呼叫端的相容包裝，主流程不使用它。
 
-The main page displays compact author/progress information without decoding media. The history view owns bounded local-image previews, cancels stale selection results, and keeps public-avatar requests on the selected connection route without authentication cookies.
+The main window separates settings from activity in two tabs. The embedded history panel owns bounded local-image previews, cancels stale selection results, and keeps public-avatar requests on the selected connection route without authentication cookies.
 
 歷史重試只送出選取的媒體鍵，由主控制器建立同一種背景下載工作。選取模式不啟動其他搜尋或作者來源，也不能用空白表單放寬標籤：引擎必須依資料庫保存的真實原貼文，或已驗證的討論串根貼文及作者關聯，重新建立資格。
 
-已完成項目的主動重新下載與失敗重試分開：`redownload_dialog.py` 提供預設副本及需再次確認的覆寫選擇，`HistoryDialog.redownloadRequested` 只送出選取的完成媒體鍵與固定模式。主控制器停用其他來源，引擎仍檢查儲存的資格；不把「重新下載」當成取消標籤驗證的開關。
+已完成項目的主動重新下載與失敗重試分開：`redownload_dialog.py` 提供預設副本及需再次確認的覆寫選擇，`HistoryPanel.redownloadRequested` 只送出選取的完成媒體鍵與固定模式。主控制器停用其他來源，引擎仍檢查儲存的資格；不把「重新下載」當成取消標籤驗證的開關。
 
 SQLite 另以追加的 `media_redownloads` 表記錄每次結果，保留原成功紀錄。副本提交不可覆寫任何既有檔案；覆寫僅允許經過邊界檢查的原路徑，提交前重驗原檔並在下載／驗檔完成後替換。失敗或停止清理本次暫存檔，保留原檔；測試須涵蓋同名競爭、取消、壞檔、路徑連結及過期 CDN 網址只刷新選取來源。
 

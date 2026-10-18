@@ -4,7 +4,7 @@ Integration: call ``build_gallery_layout(window)`` from setup_ui. The function
 does not replace any input, button, or status_box created by the controller.
 ``refresh_gallery_summary(window)`` is safe during validation and updates only
 tag/source/path summaries. The controller owns run_state_label,
-result_detail_label, and login_state_label. Log emptiness follows textChanged.
+result_detail_label, and login_state_label. Login controls live on the settings page.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from PyQt6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, QUrl
 from PyQt6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QMenu, QProxyStyle, QPushButton,
-    QScrollArea, QSizePolicy, QStyle, QStyleOptionButton, QToolButton, QVBoxLayout, QWidget,
+    QScrollArea, QSizePolicy, QStyle, QStyleOptionButton, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 
@@ -24,6 +24,7 @@ from i18n import tr, language_mode
 from resources_rc import get_icon_path
 from app_version import APP_VERSION
 from tag_chips import TagChips
+from flow_layout import FlowLayout
 
 
 TEAL = "#176C68"
@@ -359,8 +360,8 @@ def apply_gallery_theme(window, mode=None):
         ("cookie_import_btn", "folder", "accent"),
         ("choose_path_btn", "folder", "accent"), ("download_btn", "download", "accent_ink"),
         ("open_download_folder_btn", "folder-open", "accent"),
-        ("stop_btn", "stop", "muted"), ("about_btn", "info", "accent"),
-        ("help_btn", "info", "accent"), ("tools_btn", "more", "accent"),
+        ("stop_btn", "stop", "muted"), ("tools_btn", "more", "accent"),
+        ("about_action", "info", "accent"), ("help_action", "info", "accent"),
     ):
         if hasattr(window, attr):
             getattr(window, attr).setIcon(line_icon(name, color=colors[color]))
@@ -393,6 +394,8 @@ def apply_gallery_theme(window, mode=None):
         )
     if hasattr(window, "refresh_current_media"):
         window.refresh_current_media()
+    if hasattr(window, "history_panel"):
+        window.history_panel.set_theme(mode)
 
 
 def set_window_theme(window, mode):
@@ -472,8 +475,8 @@ def build_gallery_layout(window):
     root.setContentsMargins(26, 22, 26, 22)
     root.setSpacing(20)
 
-    # 頂列：品牌、語言／主題／說明，以及登入操作；和下方收集表單分開管理。
-    # Keep branding, language, theme, help and login controls separate from the collection form.
+    # 頂列只保留品牌、語言、主題與更多功能；登入操作屬於設定頁。
+    # Keep the header to branding, language, theme and More; login belongs to settings.
     header = QHBoxLayout()
     header.setSpacing(14)
     brand_mark = QLabel()
@@ -489,10 +492,6 @@ def build_gallery_layout(window):
     brand.addStretch(1)
     header.addLayout(brand)
     header.addStretch(1)
-    auth = QVBoxLayout()
-    auth.setSpacing(6)
-    auth_buttons = QHBoxLayout()
-    auth_buttons.setSpacing(9)
     window.cookie_btn.setText(tr('開啟瀏覽器登入'))
     window.cookie_btn.setIcon(line_icon("login", color="#FFFFFF"))
     window.cookie_btn.setProperty("variant", "primary")
@@ -504,9 +503,6 @@ def build_gallery_layout(window):
     window.cookie_import_btn.setIcon(line_icon("folder"))
     window.cookie_import_btn.setToolTip(tr('選擇 Netscape Cookie TXT 或舊版 cookies.json；與登入後儲存是不同操作。'))
     window.theme_btn = QPushButton(tr('深色模式'))
-    window.about_btn = QPushButton(tr('作者資訊'))
-    window.help_btn = QPushButton(tr('使用說明'))
-    window.help_btn.setAccessibleName(tr('開啟使用說明與登入引導'))
     # 語言欄有固定可見標籤，避免只看「跟隨電腦設定」時不清楚用途。
     # A persistent language label explains the control even when the selected value is Follow system.
     utilities = QHBoxLayout()
@@ -530,48 +526,39 @@ def build_gallery_layout(window):
     utilities.addWidget(window.language_label)
     utilities.addWidget(window.language_combo)
     utilities.addWidget(window.theme_btn)
-    utilities.addWidget(window.help_btn)
-    utilities.addWidget(window.about_btn)
     # 次要功能收進單一工具選單，避免多語系文字把頂列擠出視窗。
     # Group secondary actions in one tools menu to keep translated headers within the window.
     window.tools_btn = QPushButton(tr("更多功能"))
     window.tools_btn.setIcon(line_icon("more", color=TEAL))
     window.tools_menu = QMenu(window.tools_btn)
+    window.help_action = window.tools_menu.addAction(line_icon("info"), tr("使用說明"))
+    window.help_action.setToolTip(tr("開啟使用說明與登入引導"))
+    window.about_action = window.tools_menu.addAction(line_icon("info"), tr("作者資訊"))
+    window.tools_menu.addSeparator()
     window.history_action = window.tools_menu.addAction(tr("下載紀錄與收集進度"))
     window.update_action = window.tools_menu.addAction(tr("檢查 App 與擷取工具更新"))
     window.tools_menu.addSeparator()
     window.clear_login_action = window.tools_menu.addAction(tr("清除本機登入資料"))
     window.tools_btn.setMenu(window.tools_menu)
-    auth.addLayout(utilities)
-    auth_buttons.addWidget(window.cookie_btn)
-    auth_buttons.addWidget(window.cookie_save_btn)
-    auth_buttons.addWidget(window.cookie_import_btn)
-    auth_buttons.addWidget(window.tools_btn)
-    auth.addLayout(auth_buttons)
-    window.login_state_label = _label("尚未儲存登入資料", "muted")
-    window.login_state_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-    window.login_state_label.setWordWrap(True)
-    window.login_state_label.setToolTip(tr('本機已儲存 Cookie 不代表已驗證 X 伺服器登入是否仍有效。'))
-    auth.addWidget(window.login_state_label)
-    window.login_help_label = _label(
-        "登入完成後，請關閉剛才的專用瀏覽器視窗，再回來按儲存。\n"
-        "專用瀏覽器設定檔與 X Cookie 只保留在本機 data，請勿分享。", "muted", wrap=True,
-        label_type=HeaderHelpLabel,
-    )
-    window.login_help_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-    window.login_help_label.setMaximumWidth(530)
-    help_policy = window.login_help_label.sizePolicy()
-    help_policy.setHeightForWidth(True)
-    help_policy.setVerticalPolicy(QSizePolicy.Policy.Minimum)
-    window.login_help_label.setSizePolicy(help_policy)
-    auth.addWidget(window.login_help_label)
-    header.addLayout(auth)
+    utilities.addWidget(window.tools_btn)
+    header.addLayout(utilities)
     root.addLayout(header)
     root.addWidget(_rule())
 
-    # 主區域採雙欄；左邊輸入來源，右邊保留本次狀態、紀錄與操作按鈕。
-    # Use the left column for sources and the right column for progress, logs and job actions.
-    body = QHBoxLayout()
+    # 設定與狀況是主視窗的兩個分頁；主要開始／停止操作保持跨頁可用。
+    # Settings and activity are the main window's two pages; Start/Stop remain global.
+    window.main_tabs = QTabWidget()
+    window.main_tabs.setObjectName("mainTabs")
+    window.settings_page = QWidget()
+    window.activity_page = QWidget()
+    activity_layout = QVBoxLayout(window.activity_page)
+    activity_layout.setContentsMargins(0, 10, 0, 0)
+    activity_layout.setSpacing(10)
+    window.main_tabs.addTab(window.settings_page, tr("下載設定"))
+    window.main_tabs.addTab(window.activity_page, tr("下載狀況與預覽"))
+    root.addWidget(window.main_tabs, 1)
+    body = QHBoxLayout(window.settings_page)
+    body.setContentsMargins(0, 14, 0, 0)
     body.setSpacing(24)
     window.collection_scroll = QScrollArea()
     window.collection_scroll.setWidgetResizable(True)
@@ -688,6 +675,40 @@ def build_gallery_layout(window):
     sidebar = QVBoxLayout(summary)
     sidebar.setContentsMargins(0, 0, 0, 0)
     sidebar.setSpacing(13)
+    # 登入操作與說明集中一處，不在狀況頁重複佔用頂部空間。
+    # Group login actions and instructions together without crowding the activity-page header.
+    window.login_section = QWidget()
+    login = QVBoxLayout(window.login_section)
+    login.setContentsMargins(0, 0, 0, 0)
+    login.setSpacing(8)
+    login.addWidget(_label("X 登入", "section"))
+    window.login_buttons = QWidget()
+    button_policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+    button_policy.setHeightForWidth(True)
+    window.login_buttons.setSizePolicy(button_policy)
+    window.login_button_flow = FlowLayout(window.login_buttons, shrink_items=False, uniform_height=True)
+    window.login_button_flow.setSpacing(8)
+    # 以實際文字／圖示寬度排同列，放不下就換行；不縮字或裁切登入動作。
+    # Use measured text/icon widths on one row when possible; wrap without shrinking or clipping actions.
+    for button in (window.cookie_btn, window.cookie_save_btn, window.cookie_import_btn):
+        window.login_button_flow.addWidget(button)
+    login.addWidget(window.login_buttons)
+    window.login_state_label = _label("尚未儲存登入資料", "muted", wrap=True)
+    window.login_state_label.setToolTip(tr('本機已儲存 Cookie 不代表已驗證 X 伺服器登入是否仍有效。'))
+    login.addWidget(window.login_state_label)
+    window.login_help_label = _label(
+        "登入完成後，請關閉剛才的專用瀏覽器視窗，再回來按儲存。\n"
+        "專用瀏覽器設定檔與 X Cookie 只保留在本機 data，請勿分享。", "muted", wrap=True,
+        label_type=HeaderHelpLabel,
+    )
+    window.login_help_label.setMaximumWidth(530)
+    help_policy = window.login_help_label.sizePolicy()
+    help_policy.setHeightForWidth(True)
+    help_policy.setVerticalPolicy(QSizePolicy.Policy.Minimum)
+    window.login_help_label.setSizePolicy(help_policy)
+    login.addWidget(window.login_help_label)
+    sidebar.addWidget(window.login_section)
+    sidebar.addWidget(_rule())
     sidebar.addWidget(_label("本次收集", "section"))
     window.tag_summary_label = TagChips()
     window.tag_summary_label.setProperty("i18nSkip", True)
@@ -695,9 +716,8 @@ def build_gallery_layout(window):
     sidebar.addWidget(window.tag_summary_label)
     window.run_state_label = _label("尚未開始")
     window.run_state_label.setObjectName("runState")
-    sidebar.addWidget(window.run_state_label)
-    window.result_detail_label = _label("開始後會在下方顯示下載進度。", "muted", wrap=True)
-    sidebar.addWidget(window.result_detail_label)
+    window.result_detail_label = _label("開始後可在「下載狀況與預覽」查看進度。", "muted", wrap=True)
+    window.result_detail_label.setMaximumHeight(52)
     window.source_summary_label = _label("", "muted", wrap=True)
     sidebar.addWidget(window.source_summary_label)
     sidebar.addWidget(_rule())
@@ -732,15 +752,6 @@ def build_gallery_layout(window):
     destination_row.addWidget(window.open_download_folder_btn)
     sidebar.addWidget(destination)
     sidebar.addWidget(_rule())
-    # 紀錄與預覽直接可見，不再只藏在頂端的更多選單。
-    # Keep history and previews discoverable instead of placing the entry only in the overflow menu.
-    history_heading = QHBoxLayout()
-    history_heading.addWidget(_label("下載紀錄", "field"), 1)
-    window.history_button = QPushButton(tr("查看紀錄與預覽"))
-    window.history_button.setAccessibleName(tr("查看紀錄與預覽"))
-    window.history_button.setToolTip(tr("瀏覽已下載項目、作者資訊與圖片預覽"))
-    history_heading.addWidget(window.history_button)
-    sidebar.addLayout(history_heading)
     window.current_media_row = QWidget()
     # 公開頭像與作者文字只顯示當前下載項目，不會使用登入 Cookie 去抓頭像。
     # Show the current author using a public avatar request without login cookies.
@@ -761,36 +772,16 @@ def build_gallery_layout(window):
     current_text.addWidget(window.current_file_label)
     current_row.addLayout(current_text, 1)
     window.current_media_row.hide()
-    sidebar.addWidget(window.current_media_row)
-    # 空白狀態與實際紀錄共用位置，首次開啟時也能看懂下一步要做什麼。
-    # Share the same area for the empty-state guidance and the active download log.
-    log = QWidget()
-    log_layout = QGridLayout(log)
-    log_layout.setContentsMargins(0, 0, 0, 0)
+    activity_layout.addWidget(window.current_media_row)
+    # 狀況頁直接嵌入共用紀錄元件，所有完整日誌與圖片都留在同一個主分頁。
+    # Embed the shared history view so full logs and images live on the same main activity page.
+    from history_dialog import HistoryPanel
     window.status_box.setObjectName("downloadLog")
-    window.status_box.setMinimumHeight(100)
-    log_layout.addWidget(window.status_box, 0, 0)
-    empty = QWidget()
-    empty.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-    empty_layout = QVBoxLayout(empty)
-    empty_layout.setContentsMargins(20, 16, 20, 16)
-    empty_layout.setSpacing(12)
-    empty_layout.addStretch(1)
-    tray = QLabel()
-    window.log_tray = tray
-    tray.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    tray.setPixmap(line_icon("tray", 52, "#92A0A8").pixmap(QSize(52, 52)))
-    empty_layout.addWidget(tray)
-    window.log_empty_label = _label("開始後，會在這裡顯示執行結果。", "muted", wrap=True)
-    window.log_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    empty_layout.addWidget(window.log_empty_label)
-    empty_layout.addStretch(1)
-    log_layout.addWidget(empty, 0, 0)
-    window.log_empty_container = empty
-    window.status_box.textChanged.connect(lambda: empty.setVisible(window.status_box.document().isEmpty()))
-    empty.setVisible(window.status_box.document().isEmpty())
-    sidebar.addWidget(log, 1)
-    sidebar.addWidget(_rule())
+    window.history_panel = HistoryPanel(window.activity_page, window.data_dir / "downloads.sqlite3",
+                                        window.theme_mode, session_log=window.status_box)
+    window._history_dialog = window.history_panel  # 舊控制器入口仍指向同一元件。Legacy controller alias, never another window.
+    activity_layout.addWidget(window.history_panel, 1)
+    sidebar.addStretch(1)
     window.sidebar_scroll.setWidget(summary)
     right_layout.addWidget(window.sidebar_scroll, 1)
 
@@ -874,7 +865,6 @@ def build_gallery_layout(window):
     def toggle_advanced(checked):
         window.advanced_panel.setVisible(checked)
         window.advanced_toggle.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
-        tray.setVisible(not checked)
 
     window.advanced_toggle.toggled.connect(toggle_advanced)
     right_layout.addWidget(window.advanced_panel)
@@ -882,6 +872,11 @@ def build_gallery_layout(window):
     # Keep job actions outside the scrolling content so Stop remains directly accessible.
     actions = QHBoxLayout()
     actions.setSpacing(10)
+    state = QVBoxLayout()
+    state.setSpacing(3)
+    state.addWidget(window.run_state_label)
+    state.addWidget(window.result_detail_label)
+    actions.addLayout(state, 1)
     window.download_btn.setText(tr('開始收集'))
     window.download_btn.setProperty("variant", "primary")
     window.download_btn.setIcon(line_icon("download", color="#FFFFFF"))
@@ -889,11 +884,12 @@ def build_gallery_layout(window):
     window.stop_btn.setText(tr('停止'))
     window.stop_btn.setIcon(line_icon("stop", color=MUTED))
     window.stop_btn.setMinimumHeight(35)
-    actions.addWidget(window.download_btn, 3)
-    actions.addWidget(window.stop_btn, 2)
-    right_layout.addLayout(actions)
+    window.download_btn.setMinimumWidth(140)
+    window.stop_btn.setMinimumWidth(100)
+    actions.addWidget(window.download_btn)
+    actions.addWidget(window.stop_btn)
+    root.addLayout(actions)
     body.addWidget(right, 2)
-    root.addLayout(body, 1)
     # A user-requested, opt-in website link: no background request or popup.
     footer = QHBoxLayout()
     window.promotion_link = _label("", "muted")
@@ -922,11 +918,11 @@ def build_gallery_layout(window):
     window.authors_input.setTabChangesFocus(True)
     window.tweet_urls_input.setTabChangesFocus(True)
     sequence = (
-        window.language_combo, window.theme_btn, window.help_btn, window.about_btn, window.cookie_btn, window.cookie_save_btn, window.cookie_import_btn, window.tools_btn,
-        window.hashtag_input,
+        window.language_combo, window.theme_btn, window.tools_btn,
+        window.main_tabs.tabBar(), window.hashtag_input,
         window.search_checkbox, window.author_media_checkbox,
         window.discover_authors_checkbox, window.authors_input,
-        window.tweet_urls_input, window.choose_path_btn,
+        window.tweet_urls_input, window.cookie_btn, window.cookie_save_btn, window.cookie_import_btn, window.choose_path_btn,
         window.advanced_toggle, window.folder_by_user_checkbox,
         window.limit_count_checkbox, window.limit_count_input,
         window.limit_date_checkbox, window.limit_date_input,
@@ -935,7 +931,8 @@ def build_gallery_layout(window):
         window.reply_media_checkbox,
         window.warp_proxy_checkbox, window.warp_proxy_port_input,
         window.auto_driver_checkbox, window.driver_check_btn,
-        window.download_btn, window.stop_btn, window.status_box, window.promotion_link,
+        window.history_panel.search_input, window.status_box, window.history_panel.history_table,
+        window.download_btn, window.stop_btn, window.promotion_link,
     )
     for before, after in zip(sequence, sequence[1:]):
         QWidget.setTabOrder(before, after)

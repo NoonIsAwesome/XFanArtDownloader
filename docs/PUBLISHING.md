@@ -20,7 +20,7 @@ Bind the Custom Domain `downloads.noonisawesome.dev` through the Cloudflare dash
 
 ## 四資產發布 / Four-asset release
 
-將以下四檔放入同一資料夾：`XFanArtDownloader.exe`、`SHA256SUMS.txt`、`LICENSE`、`THIRD_PARTY_NOTICES.txt`。checksum manifest 至少包含 EXE 的 SHA256；若列出其他資產也必須相符。此工具固定發布 `fanart-downloader/3.0.0.0/`，並鎖定已驗證 EXE SHA256 `40e67458f418fe490755b4ec8ada91dee3802e23f7d0ebe15ac1bd04ea21c67f`。未來版本須先更新工具中的明確版本、檔案及 hash，再重新審查。
+將以下四檔放入同一資料夾：`XFanArtDownloader.exe`、`SHA256SUMS.txt`、`LICENSE`、`THIRD_PARTY_NOTICES.txt`。checksum manifest 至少包含 EXE 的 SHA256；若列出其他資產也必須相符。此工具固定發布 `fanart-downloader/3.0.0.0/`，並鎖定已驗證 EXE SHA256 `4381989fb1ccb79d9f66a82e1e60e3561d41dc9a7a2e19aa58a4ee7cbe5fc6d3`。未來版本須先更新工具中的明確版本、檔案及 hash，再重新審查。
 
 Place those four files together. `SHA256SUMS.txt` must identify the EXE; any other listed asset must also match. The tool pins the `fanart-downloader/3.0.0.0/` prefix and the verified EXE digest above. Future releases require an explicit version/hash update and review.
 

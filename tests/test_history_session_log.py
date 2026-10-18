@@ -66,19 +66,19 @@ class HistorySessionLogTests(unittest.TestCase):
     def test_two_tabs_retain_preopen_full_log_and_live_hidden_updates_without_duplicates(self):
         self.window.append_status("開始來源：#synthetic")
         self.window.append_status("✅ 🖼️ 已下載：artist\\<b>fixture</b>.png")
-        self.assertNotIn("開始來源", self.window.status_box.toPlainText())
+        self.assertIn("開始來源", self.window.status_box.toPlainText())
         self.assertIn("✅", self.window.status_box.toPlainText())
         dialog = self.open_history()
-        self.assertEqual(dialog.tabs.count(), 2)
-        self.assertEqual(dialog.tabs.tabText(0), i18n.tr("紀錄與圖片預覽"))
-        self.assertEqual(dialog.tabs.tabText(1), i18n.tr("詳細下載狀況"))
+        self.assertEqual(self.window.main_tabs.count(), 2)
+        self.assertEqual(self.window.main_tabs.tabText(0), i18n.tr("下載設定"))
+        self.assertEqual(self.window.main_tabs.tabText(1), i18n.tr("下載狀況與預覽"))
+        self.assertIsNone(dialog.tabs)
         self.assertTrue(dialog.session_log.isReadOnly())
         self.assertIn("開始來源：#synthetic", dialog.session_log.toPlainText())
         self.assertIn("<b>fixture</b>.png", dialog.session_log.toPlainText())
-        dialog.tabs.setCurrentIndex(1)
         self.window.append_status("已完成來源，略過重新掃描：@artist")
         self.assertIn("已完成來源，略過重新掃描", dialog.session_log.toPlainText())
-        dialog.close()
+        self.window.main_tabs.setCurrentIndex(0)
         self.window.append_status("開始來源：hidden synthetic")
         self.assertIn("hidden synthetic", dialog.session_log.toPlainText())
         reopened = self.open_history()
@@ -87,7 +87,7 @@ class HistorySessionLogTests(unittest.TestCase):
         self.assertEqual(dialog.session_log.toPlainText().count("hidden synthetic"), 1)
         self.assertTrue(hasattr(dialog, "jobs_table") and hasattr(dialog, "sources_table"))
 
-    def test_only_explicit_source_chatter_is_hidden_and_important_feedback_stays_visible(self):
+    def test_activity_log_retains_source_details_and_important_feedback(self):
         detailed = ("開始來源：#art", "目標標籤：#art", "已完成來源，略過重新掃描：@artist", "續跑工作 1：來源",
                     "已達本輪 20 則搜尋貼文配額；接著繼續作者補抓。", "📋 來源進度：累計完成 1、本輪沿用 2、未完成 0。")
         important = ("✅ 🖼️ 已下載：artist\\one.png", "⏭️ 🎬 已存在，略過：artist\\two.mp4",
@@ -99,7 +99,7 @@ class HistorySessionLogTests(unittest.TestCase):
             self.window.append_status(message)
         compact = self.window.status_box.toPlainText()
         for message in detailed:
-            self.assertNotIn(i18n.translate_text(message), compact)
+            self.assertIn(i18n.translate_text(message), compact)
         for message in important:
             self.assertIn(i18n.translate_text(message), compact)
         dialog = self.open_history()
@@ -118,7 +118,7 @@ class HistorySessionLogTests(unittest.TestCase):
         expected = i18n.tr("📁 已選擇儲存路徑：{folder}", folder=literal)
         self.assertIn(expected, dialog.session_log.toPlainText())
         self.assertIn(expected, self.window.status_box.toPlainText())
-        self.assertNotIn("合成來源", self.window.status_box.toPlainText())
+        self.assertIn("合成來源", self.window.status_box.toPlainText())
         self.assertIn(literal, dialog.session_log.toPlainText())
         self.window.language_mode = "zh_TW"
         i18n.set_language("zh_TW")
@@ -132,11 +132,10 @@ class HistorySessionLogTests(unittest.TestCase):
         self.assertEqual(len(self.window._status_entries), 2000)
         self.assertEqual(len(dialog._session_entries), 2000)
         self.assertTrue(dialog._session_entries[0][0].endswith("synthetic_5"))
-        self.assertNotIn("開始來源", self.window.status_box.toPlainText())
+        self.assertIn("開始來源", self.window.status_box.toPlainText())
         self.assertLessEqual(dialog.session_log.document().blockCount(), 2000)
         for index in range(2005):
             self.window.append_status(f"✅ synthetic_{index}")
-        self.assertEqual(len(self.window._compact_status_entries), 2000)
         self.assertEqual(len(self.window._status_entries), 2000)
         self.assertEqual(len(dialog._session_entries), 2000)
         self.assertLessEqual(self.window.status_box.document().blockCount(), 2000)

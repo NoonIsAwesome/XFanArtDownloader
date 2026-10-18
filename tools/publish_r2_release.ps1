@@ -14,7 +14,7 @@ $LibraryOnly = $publisherLibraryOnly
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:R2ReleasePrefix = 'fanart-downloader/3.0.0.0/'
-$script:R2ReleaseExeSha256 = '40e67458f418fe490755b4ec8ada91dee3802e23f7d0ebe15ac1bd04ea21c67f'
+$script:R2ReleaseExeSha256 = '4381989fb1ccb79d9f66a82e1e60e3561d41dc9a7a2e19aa58a4ee7cbe5fc6d3'
 $script:R2ReleaseNames = @('XFanArtDownloader.exe', 'SHA256SUMS.txt', 'LICENSE', 'THIRD_PARTY_NOTICES.txt')
 
 function Get-R2HexHash([byte[]]$Bytes) {

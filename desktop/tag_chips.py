@@ -1,6 +1,7 @@
 """One plain-text chip per target tag, wrapping within the sidebar width."""
-from PyQt6.QtCore import QEvent, QPoint, QRect, QSize, Qt
-from PyQt6.QtWidgets import QLabel, QLayout, QSizePolicy, QWidget
+from PyQt6.QtCore import QEvent, QSize, Qt
+from PyQt6.QtWidgets import QLabel, QSizePolicy, QWidget
+from flow_layout import FlowLayout
 
 
 class _Chip(QLabel):
@@ -40,61 +41,6 @@ class _Chip(QLabel):
             self._render()
 
 
-class _FlowLayout(QLayout):
-    # 使用真正的 Qt 子元件與寬度量測換行；不靠 HTML 或固定欄數模擬標籤。
-    # Wrap real Qt child widgets at their measured widths, without HTML or a fixed column count.
-    def __init__(self, parent):
-        super().__init__(parent)
-        self._items = []
-        self.setContentsMargins(0, 0, 0, 0)
-        self.setSpacing(6)
-
-    def addItem(self, item):
-        self._items.append(item)
-
-    def count(self):
-        return len(self._items)
-
-    def itemAt(self, index):
-        return self._items[index] if 0 <= index < len(self._items) else None
-
-    def takeAt(self, index):
-        return self._items.pop(index) if 0 <= index < len(self._items) else None
-
-    def expandingDirections(self):
-        return Qt.Orientation(0)
-
-    def hasHeightForWidth(self):
-        return True
-
-    def heightForWidth(self, width):
-        return self._arrange(QRect(0, 0, max(1, width), 0), measure=True)
-
-    def sizeHint(self):
-        return QSize(220, self.heightForWidth(220))
-
-    def minimumSize(self):
-        return QSize(32, max((item.minimumSize().height() for item in self._items), default=0))
-
-    def setGeometry(self, rect):
-        super().setGeometry(rect)
-        self._arrange(rect, measure=False)
-
-    def _arrange(self, rect, *, measure):
-        x, y, row_height = rect.x(), rect.y(), 0
-        width = max(1, rect.width())
-        for item in self._items:
-            hint = item.sizeHint()
-            item_width = min(width, hint.width())
-            if x > rect.x() and x + item_width > rect.x() + width:
-                x, y, row_height = rect.x(), y + row_height + self.spacing(), 0
-            if not measure:
-                item.setGeometry(QRect(QPoint(x, y), QSize(item_width, hint.height())))
-            x += item_width + self.spacing()
-            row_height = max(row_height, hint.height())
-        return y - rect.y() + row_height
-
-
 class TagChips(QWidget):
     """Retain the summary's text API while giving each tag its own chip."""
     def __init__(self, parent=None):
@@ -104,7 +50,7 @@ class TagChips(QWidget):
         policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         policy.setHeightForWidth(True)
         self.setSizePolicy(policy)
-        self._flow = _FlowLayout(self)
+        self._flow = FlowLayout(self)
         self._values = ()
         self.chips = []
 

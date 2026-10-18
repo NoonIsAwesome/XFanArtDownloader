@@ -20,7 +20,7 @@ from PyQt6.QtCore import QDate, QEvent, QObject, QThread, QTimer, Qt, QUrl, pyqt
 from PyQt6.QtGui import QCloseEvent, QDesktopServices, QIcon, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QDateEdit, QFileDialog,
-    QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QTextEdit, QWidget,
+    QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTextEdit, QWidget,
 )
 
 from author_dialog import AuthorInfoDialog
@@ -276,7 +276,6 @@ class TwitterDownloader(QWidget):
         self._usage_guide = None
         self._usage_guide_seen = False
         self._status_entries = []
-        self._compact_status_entries = []
         self._result_detail = None
         self._current_media = None
         self._avatar_image = None
@@ -300,7 +299,7 @@ class TwitterDownloader(QWidget):
         self.download_btn = QPushButton(tr('3️⃣ 開始下載'))
         self.stop_btn = QPushButton(tr('⏹️ 停止下載'))
         self.stop_btn.setEnabled(False)
-        self.status_box = QTextEdit()
+        self.status_box = QPlainTextEdit()
         self.status_box.setReadOnly(True)
         self.status_box.setAccessibleName(tr('下載狀態與錯誤訊息'))
         self.status_box.setMinimumHeight(100)
@@ -401,11 +400,12 @@ class TwitterDownloader(QWidget):
         self.authors_input.textChanged.connect(self._refresh_summary)
         self.tweet_urls_input.textChanged.connect(self._refresh_summary)
         self.theme_btn.clicked.connect(self.toggle_theme)
-        self.about_btn.clicked.connect(self.show_author_info)
-        self.help_btn.clicked.connect(self.show_usage_guide)
+        self.about_action.triggered.connect(self.show_author_info)
+        self.help_action.triggered.connect(self.show_usage_guide)
         self.language_combo.currentIndexChanged.connect(self._language_selected)
         self.history_action.triggered.connect(self.show_download_history)
-        self.history_button.clicked.connect(self.show_download_history)
+        self.history_panel.retryRequested.connect(self._retry_history_items)
+        self.history_panel.redownloadRequested.connect(self._redownload_history_items)
         self.update_action.triggered.connect(self.check_updates)
         self.clear_login_action.triggered.connect(self.clear_saved_login)
 
@@ -434,15 +434,15 @@ class TwitterDownloader(QWidget):
         self.language_combo.blockSignals(False)
         self.language_combo.setAccessibleName(tr("介面語言"))
         self.language_combo.setToolTip(tr("選擇介面語言；系統選項會跟隨電腦設定。"))
+        self.main_tabs.setTabText(0, tr("下載設定"))
+        self.main_tabs.setTabText(1, tr("下載狀況與預覽"))
         # Theme-dependent labels are generated afresh from canonical text.
         set_window_theme(self, self.theme_mode)
         self._refresh_summary()
         if self._result_detail is not None:
             template, values = self._result_detail
             self.result_detail_label.setText(tr(template, **values))
-        translated_log = "\n".join(self._render_status(*entry) for entry in self._compact_status_entries)
-        self.status_box.setPlainText(translated_log + ("\n" if self._compact_status_entries else ""))
-        self.status_box.moveCursor(QTextCursor.MoveOperation.End)
+        self.history_panel.set_session_log(self._status_entries)
         for child in self.findChildren(QWidget):
             if hasattr(child, "retranslate_ui"):
                 child.retranslate_ui()
@@ -469,32 +469,20 @@ class TwitterDownloader(QWidget):
         # Store message templates and arguments for retranslation while keeping filenames and handles literal.
         self._record_status(template, values)
 
-    @staticmethod
-    def _compact_status_entry(template, values):
-        # 只隱藏已知的來源列舉細節；未知訊息、登入／安全提示及錯誤仍留在主頁。
-        # Hide explicit source-enumeration chatter only; keep unknown, login/security and error feedback visible.
-        detailed_prefixes = ("開始來源：", "已完成來源，略過重新掃描：", "目標標籤：",
-            "同作者留言補抓已開啟：", "續跑工作 ", "已達本輪 ", "本輪：", "📋 來源進度：", "↪️ 已接續先前未完成的工作；",
-            "📋 本次排定來源已處理完畢；")
-        if template.startswith(detailed_prefixes):
-            return None
-        if template == '{state}：下載 {downloaded} 個媒體，略過 {skipped}，失敗 {failed}，標籤／日期不符 {filtered}；處理 {posts} 則貼文。':
-            return ('{state}：下載 {downloaded} · 略過 {skipped} · 失敗 {failed}', values)
-        return template, values
-
     def _record_status(self, template, values):
         # 完整原始範本持續保留，不依紀錄視窗是否開啟；兩個檢視皆有固定容量。
         # Retain canonical templates even before history opens; both views have a fixed capacity.
         entry = (template, values)
         self._status_entries.append(entry)
         del self._status_entries[:-2000]
-        compact = self._compact_status_entry(template, values)
-        if compact is not None:
-            self._compact_status_entries.append(compact)
-            del self._compact_status_entries[:-2000]
-            self._append_status_text(self._render_status(*compact))
         if self._history_dialog is not None:
             self._history_dialog.append_session_log(entry)
+        else:
+            self._append_status_text(self._render_status(*entry))
+        # 設定頁也保留短回饋，錯誤或登入提示不會只留在尚未開啟的日誌中。
+        # Keep short global feedback so errors/login prompts never disappear into an unseen activity log.
+        if template.startswith(("⚠", "❌", "🔓")):
+            self._set_result_detail(template, **(values or {}))
 
     @staticmethod
     def _public_text(value, maximum=200):
@@ -516,9 +504,10 @@ class TwitterDownloader(QWidget):
         # Wait for the author row's layout before revealing the current author and log together.
         if self._close_pending or self._stop_event.is_set() or self._current_media is None:
             return
-        available = self.sidebar_scroll.viewport().height() - self.current_media_row.height() - 42
-        self.status_box.setMaximumHeight(max(100, available))
-        QTimer.singleShot(0, self._scroll_download_status)
+        # 進度不能搶走正在編輯的設定頁；日誌在狀況頁自己的區域內捲動。
+        # Progress never steals the settings page; the activity log scrolls only inside its own area.
+        if self.main_tabs.currentIndex() == 1:
+            QTimer.singleShot(0, self._scroll_download_status)
 
     @pyqtSlot()
     def _scroll_download_status(self):
@@ -526,7 +515,9 @@ class TwitterDownloader(QWidget):
             return
         # QTextEdit 的焦點代理只會捲到游標；紀錄位於側欄最底端，直接捲到末端。
         # QTextEdit's focus proxy reveals only its cursor; the log is last, so scroll to the end.
-        bar = self.sidebar_scroll.verticalScrollBar()
+        if self.main_tabs.currentIndex() != 1:
+            return
+        bar = self.status_box.verticalScrollBar()
         bar.setValue(bar.maximum())
 
     def resizeEvent(self, event):
@@ -552,6 +543,8 @@ class TwitterDownloader(QWidget):
             self._avatar_image = None
         self.refresh_current_media()
         self._avatar_loader.load(event.get("avatar_url"))
+        if event["state"] in {"downloaded", "skipped"}:
+            self.history_panel.schedule_refresh()
         QTimer.singleShot(0, self._reveal_download_status)
 
     def _refresh_history_route(self, *_ignored):
@@ -655,7 +648,6 @@ class TwitterDownloader(QWidget):
         self.driver_check_btn.setEnabled(self._driver_thread is None and not self._close_pending)
         self.language_combo.setEnabled(not self._close_pending)
         self.history_action.setEnabled(not self._close_pending)
-        self.history_button.setEnabled(not self._close_pending)
         redownload_active = self.is_downloading and bool(self._active_redownload_count)
         self.open_download_folder_btn.setEnabled(not self._close_pending and not redownload_active)
         self.open_download_folder_btn.setToolTip(tr("重新下載使用各項目原儲存資料夾；可從下載紀錄開啟。")
@@ -740,7 +732,7 @@ class TwitterDownloader(QWidget):
         try:
             self._save_settings()
         except OSError:
-            self._log('無法記住說明視窗偏好；下次仍可從使用說明按鈕開啟。')
+            self._log('無法記住說明視窗偏好；下次仍可從「更多功能 → 使用說明」開啟。')
 
     def start_download_thread(self):
         # 舊執行緒真正結束後才允許重開，避免停止中的任務與新任務共用資源。
@@ -771,6 +763,7 @@ class TwitterDownloader(QWidget):
         self._active_redownload_mode = options.redownload_mode
         self._avatar_loader.cancel()
         self._avatar_loader.configure(options.warp_proxy, options.warp_proxy_port)
+        self.history_panel.configure_route(options.warp_proxy, options.warp_proxy_port)
         self._current_media = self._avatar_image = None
         self.refresh_current_media()
         self.is_downloading = True
@@ -809,6 +802,7 @@ class TwitterDownloader(QWidget):
         else:
             self._log("⏳ 開始處理 {targets}；原貼文須符合任一完整標籤，同串原作者留言依補抓設定處理，重複媒體只下載一次。", targets=targets)
         thread.start()
+        self.main_tabs.setCurrentIndex(1)
 
     @pyqtSlot(object)
     def _download_completed(self, result):
@@ -844,7 +838,7 @@ class TwitterDownloader(QWidget):
         elif not result.errors:
             self._log("📋 本次排定來源已處理完畢；X 未回傳的內容仍可能無法收集。")
         if self._history_dialog is not None:
-            self._history_dialog.refresh()
+            self._history_dialog.refresh(preserve_preview=True)
         for error in result.errors[:5]:
             self._log("⚠️ {message}", message=str(error))
         if len(result.errors) > 5:
@@ -854,7 +848,7 @@ class TwitterDownloader(QWidget):
     def _download_failed(self, message: str):
         self._avatar_loader.cancel()
         self._run_state = "下載未完成"
-        self._set_result_detail('請查看下方紀錄，修正問題後可重新開始。')
+        self._set_result_detail('請在「下載狀況與預覽」查看紀錄，修正問題後可重新開始。')
         self._refresh_summary()
         self._log("❌ 下載未完成：{message}", message=message)
 
@@ -970,22 +964,16 @@ class TwitterDownloader(QWidget):
         self.login_clear_requested.emit()
 
     def show_download_history(self):
-        # 歷史視窗只查詢既有資料；真正的重試仍由主控制器啟動同一套下載引擎。
-        # The history dialog only reads stored data; retries use this controller's normal download engine.
+        # 入口只切換主視窗分頁，不另開紀錄視窗或建立第二份狀態。
+        # Navigate to the main activity page without creating another window or duplicate state.
         if self._close_pending:
             return
-        if self._history_dialog is None:
-            from history_dialog import HistoryDialog
-            self._history_dialog = HistoryDialog(parent=self, db_path=self.data_dir / "downloads.sqlite3", theme=self.theme_mode)
-            self._history_dialog.retryRequested.connect(self._retry_history_items)
-            self._history_dialog.redownloadRequested.connect(self._redownload_history_items)
-        self._history_dialog.configure_route(self.warp_proxy_checkbox.isChecked(), self.warp_proxy_port_input.value())
-        self._history_dialog.set_session_log(self._status_entries)
-        self._history_dialog.set_retry_enabled(not self.is_downloading and not self._login_busy)
-        self._history_dialog.refresh()
-        self._history_dialog.show()
-        self._history_dialog.raise_()
-        self._history_dialog.activateWindow()
+        self.history_panel.configure_route(self.warp_proxy_checkbox.isChecked(), self.warp_proxy_port_input.value())
+        self.history_panel.set_retry_enabled(not self.is_downloading and not self._login_busy)
+        if self.main_tabs.currentIndex() == 1:
+            self.history_panel.refresh(preserve_preview=True)
+        else:
+            self.main_tabs.setCurrentIndex(1)
 
     @pyqtSlot(object)
     def _retry_history_items(self, media_ids):
@@ -1037,7 +1025,7 @@ class TwitterDownloader(QWidget):
         self._update_thread, self._update_worker = thread, worker
         thread.started.connect(worker.run)
         worker.completed.connect(self._updates_ready)
-        worker.failed.connect(self.append_status)
+        worker.failed.connect(self._update_check_failed)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(self._update_thread_finished)
@@ -1056,6 +1044,13 @@ class TwitterDownloader(QWidget):
         self._update_dialog = UpdateResultDialog(result, parent=self, theme=self.theme_mode)
         self._update_dialog.show()
         self._log("✅ 版本檢查結束，請查看官方版本資訊。")
+
+    @pyqtSlot(str)
+    def _update_check_failed(self, message):
+        # 版本查詢失敗也要進入跨分頁的短提示，不能只留在背景日誌。
+        # Surface update-check failures in global feedback, not only in the background log.
+        if not self._close_pending:
+            self._log("⚠️ {message}", message=message)
 
     @pyqtSlot()
     def _update_thread_finished(self):

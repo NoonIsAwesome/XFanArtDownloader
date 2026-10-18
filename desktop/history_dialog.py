@@ -10,7 +10,7 @@ from PyQt6.QtCore import QDateTime, QItemSelectionModel, QObject, QRunnable, QTh
 from PyQt6.QtGui import QDesktopServices, QIcon, QTextCursor
 from PyQt6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QPlainTextEdit, QPushButton, QScrollArea, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QLineEdit, QPlainTextEdit, QPushButton, QScrollArea, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
 )
 
 import storage
@@ -20,7 +20,7 @@ from redownload_dialog import choose_redownload_mode
 from author_avatar import AvatarLoader, avatar_pixmap, valid_avatar_url
 from media_preview import MediaPreviewLoader, preview_signature
 from ui_design import PreviewLabel, line_icon
-from ui_theme import apply_dialog_theme, theme_colors
+from ui_theme import apply_dialog_theme, apply_palette, theme_colors
 
 
 def _tip(value):
@@ -104,24 +104,24 @@ class _HistoryQuery(QRunnable):
             pass  # 視窗可能已被釋放。The dialog may already have been destroyed.
 
 
-class HistoryDialog(QDialog):
+class HistoryPanel(QWidget):
     retryRequested = pyqtSignal(object)
     redownloadRequested = pyqtSignal(object, str)
 
-    def __init__(self, parent=None, db_path=None, theme="light"):
+    def __init__(self, parent=None, db_path=None, theme="light", *, embedded=True, session_log=None):
         super().__init__(parent)
         if db_path is None:
             raise ValueError("HistoryDialog requires a database path")
         self.db_path = Path(db_path)
+        self._embedded = embedded
         self.theme_mode = theme
         self.setProperty("i18nSkip", True)
         self.setWindowIcon(QIcon(get_icon_path()))
-        self.resize(1040, 740)
-        self.setMinimumSize(800, 590)
         self._pool = QThreadPool.globalInstance()
         self._generation = 0
         self._active = self._pending = None
         self._loading = False
+        self._retain_preview = False
         self._hidden = False
         self._retry_allowed = True
         self._page, self._total = 1, 0
@@ -143,15 +143,21 @@ class HistoryDialog(QDialog):
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(250)
         self._debounce.timeout.connect(self._new_search)
+        self._live_refresh = QTimer(self)
+        self._live_refresh.setSingleShot(True)
+        self._live_refresh.setInterval(1000)
+        self._live_refresh.timeout.connect(lambda: self.refresh(preserve_preview=True))
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 22, 24, 20)
-        layout.setSpacing(14)
+        layout.setContentsMargins(*(0, 0, 0, 0) if embedded else (24, 22, 24, 20))
+        layout.setSpacing(10 if embedded else 14)
         self.title_label = _label()
         self.title_label.setProperty("role", "dialogTitle")
         layout.addWidget(self.title_label)
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs, 1)
+        self.title_label.setVisible(not embedded)
+        self.tabs = None if embedded else QTabWidget()
+        if self.tabs is not None:
+            layout.addWidget(self.tabs, 1)
 
         # 紀錄頁只載入目前一頁；本機檔案與來源都必須明確點按才開啟。
         # Load one history page at a time; files and source posts open only on explicit activation.
@@ -229,7 +235,9 @@ class HistoryDialog(QDialog):
         pager.addStretch(1)
         pager.addWidget(self.page_label)
         body.addLayout(pager)
-        self.tabs.addTab(_scroll_page(history), "")
+        self.records_scroll = _scroll_page(history)
+        if self.tabs is not None:
+            self.tabs.addTab(self.records_scroll, "")
 
         # 工作頁顯示實際來源狀態，不把搜尋跑完等同於已收齊 X 的所有作品。
         # Show recorded source states without equating completed searches with exhaustive X coverage.
@@ -241,7 +249,7 @@ class HistoryDialog(QDialog):
         # Keep the full session log and persisted source progress in the second tab; the main page stays compact.
         self.session_log_hint = _label(muted=True)
         progress_layout.addWidget(self.session_log_hint)
-        self.session_log = QPlainTextEdit()
+        self.session_log = session_log if session_log is not None else QPlainTextEdit()
         self.session_log.setReadOnly(True)
         self.session_log.setMinimumHeight(170)
         self.session_log.setMaximumHeight(260)
@@ -263,7 +271,38 @@ class HistoryDialog(QDialog):
         self.sources_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.sources_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         progress_layout.addWidget(self.sources_table, 1)
-        self.tabs.addTab(_scroll_page(progress), "")
+        if self.tabs is not None:
+            self.tabs.addTab(_scroll_page(progress), "")
+        else:
+            # 主視窗的狀況頁直接並排日誌與作品，不再套入另一組分頁。
+            # Embed the log and records side by side in the main activity page, without nested tabs.
+            self.activity_splitter = QSplitter(Qt.Orientation.Horizontal)
+            log_column = QWidget()
+            log_layout = QVBoxLayout(log_column)
+            log_layout.setContentsMargins(0, 10, 0, 0)
+            log_layout.setSpacing(8)
+            progress_layout.removeWidget(self.session_log_hint)
+            progress_layout.removeWidget(self.session_log)
+            self.session_log.setMaximumHeight(16777215)
+            self.session_log.setMinimumWidth(260)
+            log_layout.addWidget(self.session_log_hint)
+            log_layout.addWidget(self.session_log, 1)
+            self.progress_toggle = QToolButton()
+            self.progress_toggle.setCheckable(True)
+            self.progress_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            self.progress_toggle.setArrowType(Qt.ArrowType.RightArrow)
+            self.progress_toggle.clicked.connect(self._toggle_progress)
+            log_layout.addWidget(self.progress_toggle)
+            self.progress_scroll = _scroll_page(progress)
+            self.progress_scroll.setMaximumHeight(270)
+            self.progress_scroll.hide()
+            log_layout.addWidget(self.progress_scroll)
+            self.activity_splitter.addWidget(log_column)
+            self.activity_splitter.addWidget(self.records_scroll)
+            self.activity_splitter.setStretchFactor(0, 2)
+            self.activity_splitter.setStretchFactor(1, 3)
+            self.activity_splitter.setSizes([400, 600])
+            layout.addWidget(self.activity_splitter, 1)
         self.message_label = _label(muted=True)
         layout.addWidget(self.message_label)
         # 長翻譯不擠壓三個並排按鈕；左側動作分列，關閉固定在右下角。
@@ -273,9 +312,10 @@ class HistoryDialog(QDialog):
         self.retry_button, self.redownload_button, self.close_button = QPushButton(), QPushButton(), QPushButton()
         self.retry_button.setProperty("variant", "primary")
         footer.addWidget(self.retry_button, 0, 0)
-        footer.addWidget(self.redownload_button, 1, 0)
-        footer.setColumnStretch(1, 1)
+        footer.addWidget(self.redownload_button, 0 if embedded else 1, 1 if embedded else 0)
+        footer.setColumnStretch(2 if embedded else 1, 1)
         footer.addWidget(self.close_button, 1, 2)
+        self.close_button.setVisible(not embedded)
         layout.addLayout(footer)
         for button in self.findChildren(QPushButton):
             button.setAutoDefault(False)
@@ -287,7 +327,8 @@ class HistoryDialog(QDialog):
         self.next_button.clicked.connect(lambda:self._change_page(1))
         self.history_table.itemSelectionChanged.connect(self._selection_changed)
         self.jobs_table.itemSelectionChanged.connect(self._job_selected)
-        self.tabs.currentChanged.connect(self.refresh)
+        if self.tabs is not None:
+            self.tabs.currentChanged.connect(self.refresh)
         self.retry_button.clicked.connect(self._retry_selected)
         self.redownload_button.clicked.connect(self._redownload_selected)
         self.file_button.clicked.connect(lambda:self._open_local("file"))
@@ -296,6 +337,21 @@ class HistoryDialog(QDialog):
         self.close_button.clicked.connect(self.close)
         self.set_theme(theme)
         self.refresh_language()
+
+    def _section(self):
+        return self.tabs.currentIndex() if self.tabs is not None else 0
+
+    def _toggle_progress(self, checked):
+        self.progress_scroll.setVisible(checked)
+        self.progress_toggle.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+        if checked:
+            self._request("jobs", limit=20, preserve_preview=True)
+
+    def schedule_refresh(self):
+        # 下載事件最多每秒合併一次唯讀查詢；隱藏時留待下次顯示，不搶走設定頁。
+        # Coalesce download events to at most one read query per second; hidden pages refresh when shown.
+        if self.isVisible() and not self._hidden and not self._live_refresh.isActive():
+            self._live_refresh.start()
 
     @staticmethod
     def _render_session_entry(template, values):
@@ -325,9 +381,10 @@ class HistoryDialog(QDialog):
         self.session_log.setPlainText("\n".join(self._render_session_entry(*entry) for entry in self._session_entries))
         self.session_log.moveCursor(QTextCursor.MoveOperation.End)
 
-    def _request(self, kind, **arguments):
+    def _request(self, kind, *, preserve_preview=False, **arguments):
         self._generation += 1
         self._loading, self._last_error = True, ""
+        self._retain_preview = preserve_preview
         request = (self._generation, kind, arguments)
         # 同時最多一筆查詢與一筆最新待查條件，快速打字不會堆積無限工作。
         # Keep one active query and only the newest pending request during rapid input.
@@ -358,6 +415,8 @@ class HistoryDialog(QDialog):
                     self._rows, self._page, self._total = result["items"], result["page"], result["total"]
                     self._render_history(selected)
                 elif kind == "jobs":
+                    indices = self.jobs_table.selectionModel().selectedRows()
+                    selected_job = self._jobs[indices[0].row()]["job_id"] if indices and indices[0].row() < len(self._jobs) else None
                     self._jobs = result
                     self._sources = []
                     self._render_jobs()
@@ -368,24 +427,30 @@ class HistoryDialog(QDialog):
                         self.jobs_table.blockSignals(True)
                         self.jobs_table.clearSelection()
                         self.jobs_table.blockSignals(False)
-                        self.jobs_table.selectRow(0)
+                        index = next((index for index, job in enumerate(self._jobs) if job["job_id"] == selected_job), 0)
+                        self.jobs_table.selectRow(index)
                 else:
                     self._sources = result
                     self._render_sources()
             self._update_controls()
+            # 展開的工作進度跟隨紀錄刷新，依序查工作與所選來源，不另排無限工作。
+            # Refresh expanded progress after records, chaining jobs then selected sources within the same bounded queue.
+            if not error and kind == "history" and self._embedded and self.progress_toggle.isChecked():
+                self._request("jobs", limit=20, preserve_preview=True)
         if not self._hidden and pending is not None and pending[0] == self._generation:
             self._start_query(pending)
 
-    def refresh(self, *_):
-        if self.tabs.currentIndex() == 0:
-            self._request("history", status=self.status_combo.currentData(), search=self.search_input.text(), page=self._page, page_size=40)
+    def refresh(self, *_, preserve_preview=False):
+        if self._section() == 0:
+            self._request("history", status=self.status_combo.currentData(), search=self.search_input.text(), page=self._page, page_size=40,
+                          preserve_preview=preserve_preview)
         else:
             self._request("jobs", limit=20)
 
     def _new_search(self, *_):
         self._debounce.stop()
         self._page = 1
-        if self.tabs.currentIndex() == 0:
+        if self._section() == 0:
             self.refresh()
 
     def _change_page(self, delta):
@@ -422,8 +487,8 @@ class HistoryDialog(QDialog):
         # 選取、篩選、分頁及顯示狀態共用同一個身分，不能讓舊結果回填新列。
         # Selection, filters, pages and visibility share one identity so stale results cannot refill a new row.
         eligible = (single is not None and single.get("state") == "downloaded"
-                    and not self._hidden and self.isVisible() and not self._loading
-                    and self.tabs.currentIndex() == 0)
+                    and not self._hidden and self.isVisible() and (not self._loading or self._retain_preview)
+                    and self._section() == 0)
         key = tuple(single.get(field) for field in ("media_key", "author", "author_name", "avatar_url", "media_type",
                     "safe_file_path", "safe_folder_path", "preview_allowed")) if eligible else None
         if key == self._preview_key:
@@ -460,11 +525,11 @@ class HistoryDialog(QDialog):
         # 小視窗選取後捲到預覽與開檔動作；不讓新增圖片藏在分頁下緣。
         # Reveal the preview and Open actions after selection on short windows.
         if self._preview_is_current():
-            self.tabs.widget(0).ensureWidgetVisible(self.file_button, 0, 4)
+            self.records_scroll.ensureWidgetVisible(self.file_button, 0, 4)
 
     def _preview_is_current(self):
         selected = self._selected_media()
-        return (not self._hidden and self.isVisible() and not self._loading and self.tabs.currentIndex() == 0
+        return (not self._hidden and self.isVisible() and (not self._loading or self._retain_preview) and self._section() == 0
                 and self._preview_key is not None and len(selected) == 1
                 and selected[0].get("state") == "downloaded" and selected[0].get("media_key") == self._preview_key[0])
 
@@ -514,7 +579,8 @@ class HistoryDialog(QDialog):
         if indices and indices[0].row() < len(self._jobs):
             self._sources = []
             self._render_sources()
-            self._request("sources", job_id=self._jobs[indices[0].row()]["job_id"], limit=200)
+            self._request("sources", job_id=self._jobs[indices[0].row()]["job_id"], limit=200,
+                          preserve_preview=self._embedded)
 
     @staticmethod
     def _state(value):
@@ -565,8 +631,8 @@ class HistoryDialog(QDialog):
         selected = self._selected_media()
         single = selected[0] if len(selected) == 1 else None
         self._sync_preview(single)
-        self.retry_button.setVisible(self.tabs.currentIndex() == 0)
-        self.redownload_button.setVisible(self.tabs.currentIndex() == 0)
+        self.retry_button.setVisible(self._section() == 0)
+        self.redownload_button.setVisible(self._section() == 0)
         self.retry_button.setEnabled(self._retry_allowed and not self._loading and any(row["state"] == "failed" for row in selected))
         self.redownload_button.setEnabled(self._retry_allowed and not self._loading and any(row["state"] == "downloaded" for row in selected))
         self.file_button.setEnabled(bool(single and single.get("safe_file_path")))
@@ -600,7 +666,7 @@ class HistoryDialog(QDialog):
         else:
             self.detail_label.setText(tr("選取已完成項目可重新下載；失敗項目可重試。"))
             self.detail_label.setToolTip("")
-        self.message_label.setText(translate_text(self._last_error) if self._last_error else tr("正在讀取紀錄…") if self._loading else tr("沒有符合條件的紀錄。") if self.tabs.currentIndex() == 0 and not self._rows else tr("尚無收集工作。") if self.tabs.currentIndex() == 1 and not self._jobs else "")
+        self.message_label.setText(translate_text(self._last_error) if self._last_error else tr("正在讀取紀錄…") if self._loading else tr("沒有符合條件的紀錄。") if self._section() == 0 and not self._rows else tr("尚無收集工作。") if self._section() == 1 and not self._jobs else "")
 
     def set_retry_enabled(self, enabled):
         self._retry_allowed = bool(enabled)
@@ -615,12 +681,12 @@ class HistoryDialog(QDialog):
     def _redownload_selected(self):
         # 先固定目前選取的已完成項目，再讓使用者選擇另存或覆寫；視窗本身不改紀錄。
         # Snapshot selected completed IDs before choosing copy/replace; this view never edits records.
-        if not self._retry_allowed or self._loading or self.tabs.currentIndex() != 0:
+        if not self._retry_allowed or self._loading or self._section() != 0:
             return
         identifiers = list(dict.fromkeys(row["media_key"] for row in self._selected_media() if row["state"] == "downloaded"))
         if not identifiers:
             return
-        mode = choose_redownload_mode(len(identifiers), parent=self, theme=self.theme_mode)
+        mode = choose_redownload_mode(len(identifiers), parent=self.window(), theme=self.theme_mode)
         # 巢狀確認期間主視窗仍可能結束背景工作，因此再次檢查可執行狀態。
         # Recheck the busy gate after the nested choice dialog before starting a worker.
         if mode in {"copy", "overwrite"} and self._retry_allowed and not self._loading and not self._hidden:
@@ -657,8 +723,11 @@ class HistoryDialog(QDialog):
         self.setLocale(ui_locale())
         self.setWindowTitle(tr("下載紀錄"))
         self.title_label.setText(tr("下載紀錄"))
-        self.tabs.setTabText(0, tr("紀錄與圖片預覽"))
-        self.tabs.setTabText(1, tr("詳細下載狀況"))
+        if self.tabs is not None:
+            self.tabs.setTabText(0, tr("紀錄與圖片預覽"))
+            self.tabs.setTabText(1, tr("詳細下載狀況"))
+        else:
+            self.progress_toggle.setText(tr("工作與來源進度"))
         self.session_log_hint.setText(tr("本次執行紀錄（最多保留 2000 筆）"))
         self.session_log.setAccessibleName(tr("詳細下載狀況"))
         self.session_log.setPlaceholderText(tr("開始後，會在這裡顯示完整下載狀況。"))
@@ -689,8 +758,13 @@ class HistoryDialog(QDialog):
         apply_dialog_theme(self, self.theme_mode)
         self.setObjectName("historyDialog")
         colors = theme_colors(self.theme_mode)
+        # QWidget 面板與捲動內容會保留建立時的 palette，切換主題時需一併更新。
+        # Embedded QWidget surfaces and scroll contents retain construction palettes; update them with the panel theme.
+        for surface in (self, *self.findChildren(QWidget)):
+            if type(surface) is QWidget or isinstance(surface, (QScrollArea, QSplitter)):
+                apply_palette(surface, self.theme_mode)
         self.setStyleSheet(self.styleSheet()+f"""
-            QDialog#historyDialog {{ background:{colors['window']}; }}
+            QWidget#historyDialog {{ background:{colors['window']}; color:{colors['ink']}; }}
             QTableWidget {{ background:{colors['input']}; alternate-background-color:{colors['surface']};
                 color:{colors['ink']}; border:1px solid {colors['border']}; border-radius:7px;
                 selection-background-color:{colors['accent_soft']}; selection-color:{colors['accent_soft_ink']}; }}
@@ -719,6 +793,7 @@ class HistoryDialog(QDialog):
         self._pending = None
         self._loading = False
         self._debounce.stop()
+        self._live_refresh.stop()
         self._cancel_previews()
         self._refresh_preview_widgets()
 
@@ -730,6 +805,49 @@ class HistoryDialog(QDialog):
         self._cancel_queries()
         super().closeEvent(event)
 
-    def reject(self):
-        self._cancel_queries()
-        super().reject()
+
+class HistoryDialog(QDialog):
+    """Compatibility wrapper for callers that still need a standalone native dialog."""
+    retryRequested = pyqtSignal(object)
+    redownloadRequested = pyqtSignal(object, str)
+
+    def __init__(self, parent=None, db_path=None, theme="light"):
+        super().__init__(parent)
+        self.setProperty("i18nSkip", True)
+        self.setWindowIcon(QIcon(get_icon_path()))
+        self.resize(1040, 740)
+        self.setMinimumSize(800, 590)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.panel = HistoryPanel(self, db_path, theme, embedded=False)
+        layout.addWidget(self.panel)
+        self.panel.retryRequested.connect(self.retryRequested)
+        self.panel.redownloadRequested.connect(self.redownloadRequested)
+        self.panel.close_button.clicked.disconnect()
+        self.panel.close_button.clicked.connect(self.close)
+        self.set_theme(theme)
+        self.refresh_language()
+
+    def __getattr__(self, name):
+        panel = self.__dict__.get("panel")
+        if panel is not None:
+            return getattr(panel, name)
+        raise AttributeError(name)
+
+    @property
+    def _pool(self):
+        return self.panel._pool
+
+    @_pool.setter
+    def _pool(self, pool):
+        self.panel._pool = pool
+
+    def set_theme(self, theme):
+        apply_dialog_theme(self, theme)
+        self.panel.set_theme(theme)
+
+    def refresh_language(self):
+        self.setWindowTitle(tr("下載紀錄"))
+        self.panel.refresh_language()
+
+    retranslate_ui = refresh_language

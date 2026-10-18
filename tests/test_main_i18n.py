@@ -92,7 +92,7 @@ class MainLanguageTests(unittest.TestCase):
         window = self.make_window("en", show_notice=True, settings={"hashtag": "#chosen_art"})
         QTest.qWait(50)
         self.assertIsNone(window._usage_guide)
-        window.help_btn.click()
+        window.help_action.trigger()
         self.assertIsNotNone(window._usage_guide)
         self.assertEqual(window.language_mode, "en")
         self.assertEqual(window.download_btn.text(), i18n.tr("開始收集"))
@@ -284,8 +284,7 @@ class MainLanguageTests(unittest.TestCase):
                 self.assertTrue(window.language_label.isVisible())
                 self.assertGreaterEqual(window.language_label.width(),
                                         window.language_label.fontMetrics().horizontalAdvance(window.language_label.text()))
-                for widget in (window.language_label, window.language_combo, window.theme_btn, window.help_btn, window.about_btn,
-                               window.cookie_btn, window.cookie_save_btn, window.cookie_import_btn,
+                for widget in (window.language_label, window.language_combo, window.theme_btn, window.tools_btn,
                                window.download_btn, window.stop_btn):
                     position = widget.mapTo(window, QPoint())
                     self.assertGreaterEqual(position.x(), 0)
@@ -318,6 +317,7 @@ class MainLanguageTests(unittest.TestCase):
         window._download_worker = object()
         window.is_downloading = True
         window.append_status("Offline current media fixture")
+        window.main_tabs.setCurrentIndex(1)
         for language in ("zh_TW", "zh_CN", "en", "ja", "ko"):
             with self.subTest(language=language):
                 self.choose(window, language)
@@ -328,7 +328,7 @@ class MainLanguageTests(unittest.TestCase):
                     "author_name":"A long public author name", "filename":"fixture.mp4",
                     "display_path":"fixture_artist\\fixture.mp4", "media_type":"video",
                 })
-                viewport = window.sidebar_scroll.viewport()
+                viewport = window.activity_page
                 self.assertEqual(window.current_author_label.literal_text,
                                  "A long public author name · @fixture_artist")
                 self.assertEqual(window.current_file_label.literal_text, "fixture_artist\\fixture.mp4")

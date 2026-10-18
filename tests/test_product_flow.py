@@ -45,11 +45,13 @@ class ProductFlowTests(unittest.TestCase):
         self.window = main.TwitterDownloader(show_notice=False, base_dir=self.root)
         self.assertEqual(self.window.hashtag_input.text(), '#my_chosen_art')
 
-    def test_first_run_guide_is_modeless_and_remembered(self):
+    def test_first_run_help_stays_manual_modeless_and_remembered(self):
         with patch.object(main.TwitterDownloader, '_auto_check_driver'), patch.object(main.TwitterDownloader, 'show_user_notice') as notice:
             self.window = main.TwitterDownloader(show_notice=True, base_dir=self.root)
             self.window.show()
             QTest.qWait(30)
+            self.assertIsNone(self.window._usage_guide)
+            self.window.help_action.trigger()
             self.assertIsNotNone(self.window._usage_guide)
             self.assertTrue(self.window._usage_guide.isVisible())
             self.assertFalse(self.window._usage_guide.isModal())
@@ -60,7 +62,7 @@ class ProductFlowTests(unittest.TestCase):
             self.window.show()
             QTest.qWait(30)
             self.assertIsNone(self.window._usage_guide)
-            self.window.help_btn.click()
+            self.window.help_action.trigger()
             self.assertTrue(self.window._usage_guide.isVisible())
 
     def test_open_guide_tracks_theme_and_closes_with_main_window(self):

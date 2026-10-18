@@ -189,8 +189,13 @@ def gallery_stylesheet(theme: str) -> str:
         QFrame#authorSurface {{ background: {c['accent_soft']}; border-radius: 12px; }}
         QFrame#strictSurface {{ background: {c['accent_soft']}; border-radius: 8px; }}
         QFrame#destinationSurface {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 7px; }}
-        QTextEdit#downloadLog {{ background: {c['log']}; border: 1px solid {c['border']};
+        QTextEdit#downloadLog, QPlainTextEdit#downloadLog {{ background: {c['log']}; border: 1px solid {c['border']};
             border-radius: 10px; padding: 12px; font-size: 13px; }}
+        QTabWidget#mainTabs::pane {{ border: none; }}
+        QTabWidget#mainTabs > QTabBar::tab {{ background:{c['surface']}; color:{c['ink']};
+            padding:10px 20px; border-bottom:2px solid transparent; }}
+        QTabWidget#mainTabs > QTabBar::tab:selected {{ background:{c['accent_soft']}; color:{c['accent_soft_ink']};
+            border-bottom-color:{c['accent']}; }}
         QPushButton#chooseDestination {{ border: none; border-left: 1px solid {c['border']}; border-radius: 0px; padding: 8px; }}
         QPushButton#chooseDestination[keyboardFocus="true"]:focus {{ border: 2px solid {c['accent']};
             background: {c['accent_soft']}; padding: 6px 6px 6px 7px; }}

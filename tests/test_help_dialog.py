@@ -13,7 +13,7 @@ from PyQt6.QtGui import QDesktopServices, QFontDatabase, QPalette
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QCheckBox, QDialog, QLabel
 
-from help_dialog import CONNECTION_HELP_URL, PREVIEW_HELP, PRIVACY, SEARCH_LIMIT_HELP, STEPS, UsageGuideDialog
+from help_dialog import CONNECTION_HELP_URL, PREVIEW_HELP, PRIVACY, SEARCH_LIMIT_HELP, STEPS, TOOLS_HELP, UsageGuideDialog
 from ui_theme import theme_colors
 import i18n
 
@@ -214,6 +214,8 @@ class UsageGuideDialogTests(unittest.TestCase):
                 self.assertEqual(dialog.search_limit_label.text(), i18n.tr(SEARCH_LIMIT_HELP))
                 self.assertEqual(dialog.preview_label.text(), i18n.tr(PREVIEW_HELP))
                 self.assertEqual(dialog.close_button.text(), i18n.tr("關閉說明"))
+                for source in ("下載設定", "X 登入", "更多功能", "使用說明"):
+                    self.assertIn(i18n.tr(source), dialog.introduction_label.text())
                 self.assertEqual(dialog.theme_mode, "dark")
                 self.assertEqual(dialog.scroll_area.verticalScrollBar().value(), min(position, dialog.scroll_area.verticalScrollBar().maximum()))
                 self.assertEqual(dialog.locale().name(), i18n.locale().name())
@@ -226,16 +228,21 @@ class UsageGuideDialogTests(unittest.TestCase):
                 self.assertEqual(fresh.step_bodies[0].text(), i18n.tr(STEPS[0][1]))
                 self.assertEqual(fresh.close_button.text(), i18n.tr("關閉說明"))
 
-    def test_preview_guide_points_to_the_translated_history_entry_in_every_language(self):
-        self.assertIn("主頁只顯示作者與簡要進度", PREVIEW_HELP)
-        self.assertIn("選取一筆完成紀錄預覽本機圖片", PREVIEW_HELP)
+    def test_preview_guide_points_to_the_two_main_window_tabs_in_every_language(self):
+        self.assertIn("主視窗分為", PREVIEW_HELP)
+        self.assertIn("選取一筆完成紀錄即可預覽本機圖片", PREVIEW_HELP)
+        self.assertNotIn("紀錄與圖片預覽", PREVIEW_HELP)
+        self.assertNotIn("詳細下載狀況", PREVIEW_HELP)
+        self.assertIn("不會另開視窗", TOOLS_HELP)
+        self.assertNotIn("查看紀錄與預覽", TOOLS_HELP)
         for language in ("en", "ja", "ko", "zh_CN", "zh_TW"):
             with self.subTest(language=language):
                 i18n.set_language(language)
                 translated = i18n.tr(PREVIEW_HELP)
-                self.assertIn(i18n.tr("查看紀錄與預覽"), translated)
-                self.assertIn(i18n.tr("紀錄與圖片預覽"), translated)
-                self.assertIn(i18n.tr("詳細下載狀況"), translated)
+                self.assertIn(i18n.tr("下載設定"), translated)
+                self.assertIn(i18n.tr("下載狀況與預覽"), translated)
+                self.assertIn(i18n.tr("下載狀況與預覽"), i18n.tr(TOOLS_HELP))
+                self.assertIn(i18n.tr("工作與來源進度"), i18n.tr(TOOLS_HELP))
                 self.assertIn("🖼️", translated)
                 self.assertIn("🎬", translated)
                 self.assertIn("\\", translated)

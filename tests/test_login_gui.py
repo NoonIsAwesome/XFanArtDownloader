@@ -241,9 +241,9 @@ class LoginGuiTests(unittest.TestCase):
             self.assertTrue(closed.is_set())
             author.assert_not_called()
 
-    def test_regular_close_does_not_show_author_and_header_button_still_opens_it(self):
+    def test_regular_close_does_not_show_author_and_more_menu_still_opens_it(self):
         with patch.object(main, "AuthorInfoDialog") as author_dialog:
-            self.window.about_btn.click()
+            self.window.about_action.trigger()
             author_dialog.assert_called_once_with(self.window, theme=self.window.theme_mode)
             author_dialog.return_value.exec.assert_called_once()
             author_dialog.reset_mock()

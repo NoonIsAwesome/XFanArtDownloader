@@ -398,7 +398,7 @@
   "搜尋貼文上限的範圍": "What the search post limit covers",
   "同作者留言補抓已開啟：僅從符合標籤的原貼文延伸，驗證同作者與回覆關聯；留言可不含標籤。日期以起點計算，搜尋配額不會截斷同串媒體。": "Same-author reply backfill is on. It starts only from tag-matching posts and verifies the author and reply relationship; replies may be untagged. The date applies to the starting post, and the search quota does not cut off media in the same thread.",
   "作者與本機預覽": "Author and local preview",
-  "目前作者的公開頭像請求不帶登入 Cookie；讀取失敗會顯示替代圖，不影響下載。主頁只顯示作者與簡要進度；按「查看紀錄與預覽」，可在「紀錄與圖片預覽」選取一筆完成紀錄預覽本機圖片；「詳細下載狀況」顯示完整執行紀錄與來源進度。預覽不會重新下載或上傳；影片不會自動播放。\n紀錄中的 🖼️／🎬 分別表示圖片與影片。啟用作者資料夾時，簡短路徑顯示「作者帳號\\檔名」；關閉時只顯示檔名。": "Public avatar requests for the current author do not include sign-in Cookies. If an avatar cannot be loaded, a placeholder appears without affecting downloads. The main page shows only the author and brief progress. Click “History & preview”, then select one completed record in “History & image preview” to preview a local image. “Detailed download status” shows the complete session log and source progress. Previews do not download files again or upload them, and videos do not autoplay.\nIn the log, 🖼️ means an image and 🎬 means a video. When author folders are enabled, the short path is author account\\filename; otherwise, only the filename is shown.",
+  "目前作者的公開頭像請求不帶登入 Cookie；讀取失敗會顯示替代圖，不影響下載。主視窗分為「下載設定」與「下載狀況與預覽」兩個分頁；設定頁集中標籤、來源與進階選項，狀況頁顯示完整執行紀錄、作者與下載紀錄。選取一筆完成紀錄即可預覽本機圖片。預覽不會重新下載或上傳；影片不會自動播放。\n紀錄中的 🖼️／🎬 分別表示圖片與影片。啟用作者資料夾時，簡短路徑顯示「作者帳號\\檔名」；關閉時只顯示檔名。": "Public avatar requests for the current author do not include sign-in Cookies. If an avatar cannot be loaded, a placeholder appears without affecting downloads. The main window has two tabs: “Download settings” and “Download status and preview”. The settings tab contains tags, sources and advanced options; the status tab shows the complete session log, authors and download records. Select one completed record to preview a local image. Previews do not download files again or upload them, and videos do not autoplay.\nIn the log, 🖼️ means an image and 🎬 means a video. When author folders are enabled, the short path is author account\\filename; otherwise, only the filename is shown.",
   "只計算標籤搜尋符合條件的不同原貼文（含已下載）；作者、貼文網址、重試與同串補抓不受此上限限制。": "Counts distinct matching original posts from tag search, including posts already downloaded. Author media, post URLs, retries, and thread backfill are outside this limit.",
   "目前作者的頭像": "Current author's avatar",
   "搜尋達上限後仍會進行作者補抓；本輪總數可能超過上限。": "Author backfill continues after the search limit is reached; this run's total may exceed the limit.",
@@ -489,7 +489,7 @@
   "{source_name} 未完成（{error_type}）；請檢查登入或網路後重試。": "{source_name} incomplete ({error_type}); check sign-in or network and retry.",
   "續跑工作 {job_id}：已完成來源略過；未完成來源重新列舉並依媒體紀錄去重，並非從分頁游標續傳。": "Resuming job {job_id}: finished sources are skipped; unfinished sources are listed again and deduplicated from media history, not resumed from pagination cursors.",
   "設定起始日期並勾選分段搜尋，會以 30 天為一段查詢，仍遵守搜尋上限。\n相同設定可接續未完成工作；已完成來源會略過，未完成段落可能重新掃描，已下載媒體不會重複下載。接續時，此工作已看過的搜尋貼文不重占本輪配額。\n未完成工作沿用原先排程的日期範圍；若要立即查詢新日期，可取消「接續未完成的收集工作」開始新工作。": "Set a start date and enable date windows to search in 30-day segments, still within the search quota.\nThe same settings can resume unfinished jobs. Finished sources are skipped; unfinished segments may be scanned again, while downloaded media stays deduplicated. Search posts already seen by this job do not use this run's quota again.\nAn unfinished job keeps its originally scheduled date range. To query newer dates immediately, turn off Resume unfinished collection jobs and start a new job.",
-  "「更多功能 → 下載紀錄與收集進度」可篩選下載結果、開啟檔案，以及只重試選取的失敗項目；收集進度分頁會列出尚未完成的來源。\n「清除本機登入資料」需再次確認，只移除本工具的 Cookie 與專用瀏覽器資料，保留下載與紀錄。「檢查 App 與擷取工具更新」只查詢官方版本資訊，不會自動下載或安裝。": "More tools → Download history and collection progress lets you filter results, open files and retry only selected failed items. The progress tab lists unfinished sources.\nClear local sign-in data asks for confirmation and removes only this App's Cookie and dedicated browser data, keeping downloads and history. Check App and extractor updates only queries official version information, without automatic downloads or installation.",
+  "主視窗的「下載狀況與預覽」分頁可查看完整日誌、篩選下載結果、開啟檔案，以及只重試選取的失敗項目；展開「工作與來源進度」可查看尚未完成的來源。更多功能選單的紀錄入口也會切換到同一分頁，不會另開視窗。\n「清除本機登入資料」需再次確認，只移除本工具的 Cookie 與專用瀏覽器資料，保留下載與紀錄。「檢查 App 與擷取工具更新」只查詢官方版本資訊，不會自動下載或安裝。": "The “Download status and preview” tab in the main window lets you view the complete log, filter download results, open files and retry only selected failed items. Expand “Job and source progress” to see unfinished sources. The history entry in the More tools menu also switches to the same tab without opening another window.\n“Clear local sign-in data” requires confirmation and removes only this tool’s Cookies and dedicated browser data, preserving downloads and history. “Check App and extractor updates” only checks official version information; it does not download or install updates automatically.",
   "分段搜尋與接續工作": "Date windows and resuming jobs",
   "紀錄、登入資料與更新": "History, sign-in data and updates",
   "檔案已不存在或不在原儲存目錄內。": "The file no longer exists or is outside its original save directory.",
@@ -603,5 +603,13 @@
   "本次執行紀錄（最多保留 2000 筆）": "Current session log (up to 2000 entries)",
   "開始後，會在這裡顯示完整下載狀況。": "Complete download activity will appear here after you start.",
   "{state}：下載 {downloaded} · 略過 {skipped} · 失敗 {failed}": "{state}: Downloaded {downloaded} · Skipped {skipped} · Failed {failed}",
-  "✅ 下載 {downloaded} · ⏭️ 略過 {skipped} · ❌ 失敗 {failed}": "✅ Downloaded {downloaded} · ⏭️ Skipped {skipped} · ❌ Failed {failed}"
+  "✅ 下載 {downloaded} · ⏭️ 略過 {skipped} · ❌ 失敗 {failed}": "✅ Downloaded {downloaded} · ⏭️ Skipped {skipped} · ❌ Failed {failed}",
+  "下載設定": "Download settings",
+  "下載狀況與預覽": "Download status and preview",
+  "工作與來源進度": "Job and source progress",
+  "開始後可在「下載狀況與預覽」查看進度。": "After starting, view progress in “Download status and preview”.",
+  "請在「下載狀況與預覽」查看紀錄，修正問題後可重新開始。": "View the log in “Download status and preview”, fix the issue, then start again.",
+  "X 登入": "X sign-in",
+  "先設定標籤，再於「下載設定」的「X 登入」儲存登入狀態。之後可隨時從「更多功能 → 使用說明」重看這份引導。": "Set your tags, then save your sign-in under “X sign-in” in “Download settings”. You can reopen this guide at any time from “More tools → Help”.",
+  "無法記住說明視窗偏好；下次仍可從「更多功能 → 使用說明」開啟。": "Could not save the guide preference. You can still open it next time from “More tools → Help”."
 }

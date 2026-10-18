@@ -131,6 +131,19 @@ class I18nTests(unittest.TestCase):
                     for symbol in ('✅', '⏭️', '❌'):
                         self.assertEqual(symbol in translated, symbol in template)
 
+    def test_navigation_hints_name_the_translated_main_activity_tab(self):
+        messages = (
+            '開始後可在「下載狀況與預覽」查看進度。',
+            '請在「下載狀況與預覽」查看紀錄，修正問題後可重新開始。',
+        )
+        for language in ('en', 'ja', 'ko', 'zh_CN'):
+            i18n.set_language(language)
+            for source in messages:
+                with self.subTest(language=language, source=source):
+                    translated = i18n.tr(source)
+                    self.assertNotEqual(translated, source)
+                    self.assertIn(i18n.tr('下載狀況與預覽'), translated)
+
     def test_nested_known_error_message_is_translated_without_touching_path(self):
         catalog = {'操作失敗：{error}':'Operation failed: {error}', '檔案無法開啟':'File cannot be opened'}
         with patch.dict(i18n._catalogs, {'en':catalog}), patch.dict(i18n._templates, {}, clear=True):
