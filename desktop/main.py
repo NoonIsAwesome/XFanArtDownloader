@@ -1,5 +1,9 @@
 """Gallery collection workbench backed by gallery-dl and durable history."""
 
+# 主視窗只負責輸入、畫面與工作狀態；擷取、下載和登入交給各自的背景 worker。
+# 如需新增來源，優先擴充下載引擎，避免把網站判斷或網路連線塞進介面事件。
+# The window coordinates input and state; extend the engine for new sources and keep network work in workers.
+
 from __future__ import annotations
 
 import json
@@ -20,8 +24,12 @@ from PyQt6.QtWidgets import (
 )
 
 from author_dialog import AuthorInfoDialog
+from app_version import APP_VERSION
 from downloader import DownloadEngine, DownloadOptions, parse_hashtags
 from login_browser import LoginBrowser, import_cookies
+from login_browser import clear_login_data
+from update_checker import UpdateCheckWorker
+from update_dialog import UpdateResultDialog, confirm_clear_login
 from resources_rc import get_icon_path
 from ui_design import apply_dialog_theme, build_gallery_layout, refresh_gallery_summary, set_window_theme, WrappingCheckBox, line_icon, theme_colors
 from author_avatar import AvatarLoader, avatar_pixmap
@@ -55,6 +63,8 @@ def normalized_hashtag(value: str) -> str:
 
 
 def normalized_author(value: str) -> str:
+    # 作者欄接受帳號或媒體頁；貼文連結屬於另一種來源，需交給下方網址欄。
+    # Accept a handle or media page here; individual post links belong to the separate URL input.
     value = value.strip()
     if "://" in value:
         parsed = urlsplit(value)
@@ -76,6 +86,8 @@ def normalized_author(value: str) -> str:
 
 
 def normalized_tweet_url(value: str) -> str:
+    # 去除分享參數、圖片序號等外觀差異，讓同一貼文使用一致的去重鍵。
+    # Normalize sharing parameters and photo indexes so each post has one deduplication key.
     parsed = urlsplit(value.strip())
     if parsed.scheme not in ("http", "https") or parsed.hostname not in (
         "x.com", "www.x.com", "twitter.com", "www.twitter.com",
@@ -91,6 +103,8 @@ def normalized_tweet_url(value: str) -> str:
 
 
 class DownloadWorker(QObject):
+    # 背景執行引擎，僅以 signal 回報結果；這個執行緒不能直接修改 Qt 畫面。
+    # Run the engine in the background and report through signals; never update widgets from this thread.
     message = pyqtSignal(str)
     completed = pyqtSignal(object)
     failed = pyqtSignal(str)
@@ -115,6 +129,8 @@ class DownloadWorker(QObject):
 
 
 class LoginWorker(QObject):
+    # 開啟、匯出與關閉都沿用同一個登入 worker，避免跨執行緒操作瀏覽器程序。
+    # Keep browser open, export and close operations on the same login worker thread.
     """All browser calls stay in one thread, including browser shutdown."""
 
     completed = pyqtSignal(str, int)
@@ -164,8 +180,23 @@ class LoginWorker(QObject):
             self.browser = None
             self.closed.emit()
 
+    @pyqtSlot()
+    def clear_login(self):
+        # 只在明確確認後刪除本軟體的專用登入副本，不操作日常瀏覽器或網站上的工作階段。
+        # Delete only this app's dedicated local login copy after confirmation, never the user's everyday browser.
+        try:
+            if self.browser is not None:
+                self.browser.close()
+            clear_login_data(self.profile_dir, self.cookie_file)
+            self.browser = None
+            self.completed.emit("clear", 0)
+        except Exception as exc:
+            self.failed.emit("clear", str(exc))
+
 
 class DriverWorker(QObject):
+    # ChromeDriver 為舊版相容功能；檢查失敗不應阻止新版 gallery-dl 下載。
+    # ChromeDriver is a compatibility feature; its update failure must not block gallery-dl downloads.
     message = pyqtSignal(str)
     finished = pyqtSignal()
 
@@ -186,9 +217,12 @@ class DriverWorker(QObject):
 
 
 class TwitterDownloader(QWidget):
+    # 此控制器集中管理三類背景工作；排版與外觀則放在 ui_design.py。
+    # This controller owns background job state; ui_design.py owns layout and visual presentation.
     browser_open_requested = pyqtSignal()
     cookie_save_requested = pyqtSignal()
     browser_close_requested = pyqtSignal()
+    login_clear_requested = pyqtSignal()
 
     def __init__(self, show_notice: bool = True, base_dir: Path | None = None):
         super().__init__()
@@ -210,8 +244,11 @@ class TwitterDownloader(QWidget):
         self.language_mode = language_mode()
         install_qt_translator(QApplication.instance())
         self.setLocale(ui_locale())
+        # 執行狀態和設定值分開保存；重新開始時會建立全新的停止旗標與 worker。
+        # Keep runtime state separate from preferences; each new run gets a fresh worker and stop event.
         self.download_path = str(self.base_dir / "downloads")
         self.successful_downloads = 0
+        self._active_retry_count = 0
         self.theme_mode = "light"
         self._run_state = "尚未開始"
         self.is_downloading = False
@@ -229,6 +266,10 @@ class TwitterDownloader(QWidget):
         self._login_shutdown_requested = False
         self._driver_thread = None
         self._driver_worker = None
+        self._update_thread = None
+        self._update_worker = None
+        self._update_dialog = None
+        self._history_dialog = None
         self._close_pending = False
         self._allow_close = False
         self._usage_guide = None
@@ -243,8 +284,10 @@ class TwitterDownloader(QWidget):
         self._preview_output_root = None
 
         self.setWindowIcon(QIcon(get_icon_path()))
-        self.setWindowTitle("FanArt Downloader")
+        self.setWindowTitle(f"FanArt Downloader {APP_VERSION}")
 
+        # 基本輸入與下載紀錄：新安裝不預填任何作者專用 FanArt 標籤。
+        # Create the basic inputs and log without pre-filling any personal FanArt tag.
         self.hashtag_input = QLineEdit("")
         self.hashtag_input.setAccessibleName(tr('目標標籤，可輸入多個，以空白或逗號分隔'))
         self.cookie_btn = QPushButton(tr('開啟瀏覽器登入'))
@@ -265,6 +308,8 @@ class TwitterDownloader(QWidget):
         self.status_box.setMinimumHeight(100)
         self.status_box.document().setMaximumBlockCount(2000)
 
+        # 三種收集入口可搭配使用：標籤搜尋、作者補抓、使用者貼上的貼文網址。
+        # Tag search, author backfill and pasted post URLs can be combined in one collection.
         self.search_checkbox = QCheckBox(tr('搜尋 Hashtag 貼文'))
         self.search_checkbox.setChecked(True)
         self.author_media_checkbox = QCheckBox(tr('從作者媒體頁補抓相同 Hashtag'))
@@ -281,6 +326,8 @@ class TwitterDownloader(QWidget):
         self.tweet_urls_input.setPlaceholderText(tr('選填；每行一則完整貼文網址：https://x.com/帳號/status/編號'))
         self.tweet_urls_input.setAccessibleName(tr('貼文網址，每行一則'))
         self.tweet_urls_input.setMaximumHeight(65)
+        # 進階選項只影響本次任務；WARP 預設關閉，不會修改電腦的 DNS 或 VPN。
+        # Advanced options apply to this job; WARP starts disabled and never changes system DNS or VPN settings.
         self.retry_failed_checkbox = WrappingCheckBox(tr('重試先前失敗的下載'))
         self.retry_failed_checkbox.setChecked(True)
         self.reply_media_checkbox = WrappingCheckBox(tr("補抓原作者在同一討論串的圖片與影片"))
@@ -305,9 +352,17 @@ class TwitterDownloader(QWidget):
         self.limit_date_input.setCalendarPopup(True)
         self.limit_date_input.setDate(QDate.currentDate())
         self.limit_date_input.setAccessibleName(tr('貼文起始日期'))
+        self.date_window_search_checkbox = WrappingCheckBox(tr("依日期分段搜尋，減少漏抓"))
+        self.date_window_search_checkbox.setChecked(True)
+        self.date_window_search_checkbox.setToolTip(tr("需設定起始日期；分段查詢仍遵守搜尋上限與 X 回傳的可見範圍。"))
+        self.resume_checkbox = WrappingCheckBox(tr("接續未完成的收集工作"))
+        self.resume_checkbox.setChecked(True)
+        self.resume_checkbox.setToolTip(tr("相同設定會接續未完成來源；該段可能重新掃描，已下載的媒體不會重複下載。"))
         self.human_behavior_checkbox = WrappingCheckBox(tr('下載間隨機休息（假裝自己不是機器人）'))
         self.human_behavior_checkbox.setChecked(True)
 
+        # 先建立畫面再載入偏好；非同步頭像／預覽完成後才由主執行緒更新元件。
+        # Build widgets before restoring preferences; deliver asynchronous avatar and preview results to the GUI thread.
         self.setup_ui()
         self._avatar_loader = AvatarLoader(self)
         self._avatar_loader.ready.connect(self._avatar_ready)
@@ -326,6 +381,8 @@ class TwitterDownloader(QWidget):
         build_gallery_layout(self)
 
     def setup_signals(self):
+        # 將操作集中接線，避免切換語言或主題時重複連接並觸發多次下載。
+        # Connect actions once so language or theme changes cannot trigger duplicate downloads.
         self.cookie_btn.clicked.connect(self.open_browser)
         self.cookie_save_btn.clicked.connect(self.save_cookies)
         self.cookie_import_btn.clicked.connect(self.import_cookie_file)
@@ -348,6 +405,9 @@ class TwitterDownloader(QWidget):
         self.about_btn.clicked.connect(self.show_author_info)
         self.help_btn.clicked.connect(self.show_usage_guide)
         self.language_combo.currentIndexChanged.connect(self._language_selected)
+        self.history_action.triggered.connect(self.show_download_history)
+        self.update_action.triggered.connect(self.check_updates)
+        self.clear_login_action.triggered.connect(self.clear_saved_login)
 
     def _language_selected(self, index):
         code = self.language_combo.itemData(index)
@@ -363,6 +423,8 @@ class TwitterDownloader(QWidget):
 
     def refresh_language(self):
         """Retranslate in place: inputs, worker connections and state survive."""
+        # 在原有元件上更新文字，保留輸入、工作連線與下載進度，不重建視窗。
+        # Translate existing widgets in place, preserving inputs, worker connections and current progress.
         install_qt_translator(QApplication.instance())
         self.setLocale(ui_locale())
         translate_widget_tree(self)
@@ -403,12 +465,16 @@ class TwitterDownloader(QWidget):
         return tr(message, **arguments)
 
     def _log(self, template, **values):
+        # 保存「訊息範本＋參數」供切換語言時重譯；檔名與作者帳號保持原樣。
+        # Store message templates and arguments for retranslation while keeping filenames and handles literal.
         self._status_entries.append((template, values))
         del self._status_entries[:-2000]
         self._append_status_text(self._render_status(template, values))
 
     @staticmethod
     def _public_text(value, maximum=200):
+        # 作者名稱／檔名屬於外部資料；限制長度並移除控制字元後才放進畫面。
+        # Treat external names and filenames as bounded plain text and strip control characters.
         if not isinstance(value, str):
             return ""
         return "".join(char for char in value[:maximum] if not unicodedata.category(char).startswith("C")).strip()
@@ -454,6 +520,8 @@ class TwitterDownloader(QWidget):
             QTimer.singleShot(0, self._reveal_download_status)
 
     def _media_progress(self, worker, event):
+        # 比對 worker 身分，而非只看是否下載中：上一輪排隊中的 signal 可能較晚送達。
+        # Check worker identity because queued signals from an earlier run may arrive after a restart.
         # Queued events from a stopped/previous run must never revive network
         # work or replace the author/preview of a newly started collection.
         if (worker is not self._download_worker or not self.is_downloading
@@ -485,6 +553,8 @@ class TwitterDownloader(QWidget):
             QTimer.singleShot(0, self._reveal_download_status)
 
     def refresh_current_media(self):
+        # 只根據已收到的事件繪圖；影片顯示類型提示，這裡不播放或額外抓取媒體。
+        # Render received events only; show a video placeholder without fetching or playing extra media.
         if not hasattr(self, "current_media_row"):
             return
         colors = theme_colors(self.theme_mode)
@@ -515,6 +585,9 @@ class TwitterDownloader(QWidget):
         set_window_theme(self, "dark" if self.theme_mode == "light" else "light")
         if self._usage_guide is not None:
             self._usage_guide.set_theme(self.theme_mode)
+        for dialog in (self._history_dialog, self._update_dialog):
+            if dialog is not None:
+                dialog.set_theme(self.theme_mode)
         try:
             self._save_settings()
         except OSError as exc:
@@ -527,9 +600,9 @@ class TwitterDownloader(QWidget):
         refresh_gallery_summary(self)
         self.run_state_label.setText(translate_text(self._run_state))
         if self._login_busy:
-            login_status = self._login_progress_message or (
-                "正在開啟專用登入視窗…" if self._login_operation == "open" else "正在讀取並儲存 X 登入狀態…"
-            )
+            login_status = self._login_progress_message or {
+                "open": "正在開啟專用登入視窗…", "clear": "正在清除本機登入資料…",
+            }.get(self._login_operation, "正在讀取並儲存 X 登入狀態…")
         elif self._login_status_message:
             login_status = self._login_status_message
         elif self._login_browser_open:
@@ -556,6 +629,8 @@ class TwitterDownloader(QWidget):
         self.status_box.ensureCursorVisible()
 
     def _update_controls(self, *_):
+        # 收集或安全關閉期間鎖定會改變任務內容的欄位，讓設定快照保持一致。
+        # Lock job-changing inputs during collection or shutdown to preserve the settings snapshot.
         editable = not self.is_downloading and not self._close_pending
         for widget in (
             self.hashtag_input, self.choose_path_btn, self.search_checkbox,
@@ -564,6 +639,7 @@ class TwitterDownloader(QWidget):
             self.reply_media_checkbox,
             self.limit_count_checkbox, self.limit_date_checkbox,
             self.warp_proxy_checkbox,
+            self.date_window_search_checkbox, self.resume_checkbox,
         ):
             widget.setEnabled(editable)
         author_enabled = editable and self.author_media_checkbox.isChecked()
@@ -571,6 +647,7 @@ class TwitterDownloader(QWidget):
         self.discover_authors_checkbox.setEnabled(author_enabled)
         self.limit_count_input.setEnabled(editable and self.limit_count_checkbox.isChecked())
         self.limit_date_input.setEnabled(editable and self.limit_date_checkbox.isChecked())
+        self.date_window_search_checkbox.setEnabled(editable and self.limit_date_checkbox.isChecked() and self.search_checkbox.isChecked())
         self.warp_proxy_port_input.setEnabled(editable and self.warp_proxy_checkbox.isChecked())
         self.download_btn.setEnabled(editable and not self._login_busy)
         self.cookie_btn.setEnabled(editable and not self._login_busy)
@@ -580,10 +657,17 @@ class TwitterDownloader(QWidget):
         self.auto_driver_checkbox.setEnabled(not self._close_pending)
         self.driver_check_btn.setEnabled(self._driver_thread is None and not self._close_pending)
         self.language_combo.setEnabled(not self._close_pending)
+        self.history_action.setEnabled(not self._close_pending)
+        self.update_action.setEnabled(self._update_thread is None and not self._close_pending)
+        self.clear_login_action.setEnabled(editable and not self._login_busy)
+        if self._history_dialog is not None:
+            self._history_dialog.set_retry_enabled(editable and not self._login_busy)
         self._refresh_summary()
 
     def snapshot_options(self) -> DownloadOptions:
         """Read widgets once on the GUI thread; workers only receive this value."""
+        # 先完整驗證所有欄位，再交出一次性的設定快照；失敗時不啟動背景工作。
+        # Validate every input before creating the immutable job snapshot or starting background work.
         hashtags = parse_hashtags(self.hashtag_input.text())
         # Keep the legacy field for older callers and a readable single-tag label.
         # The engine uses the normalized tuple for matching every source.
@@ -620,6 +704,8 @@ class TwitterDownloader(QWidget):
             warp_proxy=self.warp_proxy_checkbox.isChecked(),
             warp_proxy_port=self.warp_proxy_port_input.value(),
             include_author_replies=self.reply_media_checkbox.isChecked(),
+            date_window_search=self.date_window_search_checkbox.isChecked(),
+            resume=self.resume_checkbox.isChecked(),
         )
 
     def _validation_error(self, message: str):
@@ -655,16 +741,30 @@ class TwitterDownloader(QWidget):
             self._log('無法記住說明視窗偏好；下次仍可從使用說明按鈕開啟。')
 
     def start_download_thread(self):
+        # 舊執行緒真正結束後才允許重開，避免停止中的任務與新任務共用資源。
+        # Wait for the old thread to finish before allowing a new run to share its resources.
         if self.is_downloading or self._login_busy or self._close_pending or self._download_thread is not None:
             return
         try:
             options = self.snapshot_options()
-            self.data_dir.mkdir(parents=True, exist_ok=True)
-            self._save_settings()
         except (ValueError, OSError) as exc:
             self._validation_error(str(exc))
             return
+        self._start_download_options(options)
+
+    def _start_download_options(self, options):
+        # 一般收集與單項重試共用執行緒生命週期；只讓已驗證的設定進入此處。
+        # Normal collection and selected retries share one worker lifecycle after their inputs are validated.
+        if self.is_downloading or self._login_busy or self._close_pending or self._download_thread is not None:
+            return
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            self._save_settings()
+        except OSError as exc:
+            self._validation_error(str(exc))
+            return
         self.successful_downloads = 0
+        self._active_retry_count = len(options.retry_media_ids)
         self._avatar_loader.cancel()
         self._avatar_loader.configure(options.warp_proxy, options.warp_proxy_port)
         self._preview_loader.cancel()
@@ -673,7 +773,10 @@ class TwitterDownloader(QWidget):
         self.refresh_current_media()
         self.is_downloading = True
         self._run_state = "正在收集"
-        self._set_result_detail('正在逐一核對來源與完整標籤；下載紀錄會持續更新。')
+        self._set_result_detail("正在重試選取媒體；只使用紀錄中已驗證的收集範圍。" if options.retry_media_ids
+                               else '正在逐一核對來源與完整標籤；下載紀錄會持續更新。')
+        # 每輪獨立的取消旗標可防止「停止後重開」立即被上一輪的停止狀態取消。
+        # A fresh stop event prevents a restarted run from inheriting the previous cancellation.
         self._stop_event = threading.Event()
         thread = QThread(self)
         worker = DownloadWorker(options, self._stop_event)
@@ -691,18 +794,24 @@ class TwitterDownloader(QWidget):
         thread.finished.connect(thread.deleteLater)
         self._update_controls()
         targets = "、".join("#" + tag for tag in options.hashtags)
-        self._log("⏳ 開始處理 {targets}；原貼文須符合任一完整標籤，同串原作者留言依補抓設定處理，重複媒體只下載一次。", targets=targets)
+        if options.retry_media_ids:
+            self._log("⏳ 正在重試選取的 {count} 個媒體；其餘來源不會啟動。", count=len(options.retry_media_ids))
+        else:
+            self._log("⏳ 開始處理 {targets}；原貼文須符合任一完整標籤，同串原作者留言依補抓設定處理，重複媒體只下載一次。", targets=targets)
         thread.start()
 
     @pyqtSlot(object)
     def _download_completed(self, result):
+        # 成功、部分完成與使用者停止分開呈現；有來源錯誤時不能顯示全部完成。
+        # Distinguish success, partial completion and cancellation; source errors must not look like full success.
+        incomplete = getattr(result, "incomplete_sources", [])
         if result.stopped:
             self._avatar_loader.cancel()
             self._preview_loader.cancel()
         self.successful_downloads = result.downloaded
         if result.stopped:
             state = "🛑 已停止"
-        elif result.errors or result.failed:
+        elif result.errors or result.failed or incomplete or getattr(result, "job_state", "") in {"partial", "stopped"}:
             state = "⚠️ 部分完成／有失敗項目" if result.downloaded or result.skipped or result.posts else "❌ 未完成"
         else:
             state = "✅ 本輪處理完成"
@@ -710,6 +819,23 @@ class TwitterDownloader(QWidget):
         self._set_result_detail('下載 {downloaded} 個媒體 · 略過 {skipped} · 失敗 {failed}\n處理 {posts} 則貼文 · 標籤／日期不符 {filtered}', downloaded=result.downloaded, skipped=result.skipped, failed=result.failed, posts=result.posts, filtered=result.filtered)
         self._refresh_summary()
         self._log('{state}：下載 {downloaded} 個媒體，略過 {skipped}，失敗 {failed}，標籤／日期不符 {filtered}；處理 {posts} 則貼文。', state=state, downloaded=result.downloaded, skipped=result.skipped, failed=result.failed, filtered=result.filtered, posts=result.posts)
+        # 來源完整性與媒體下載結果分開報告，避免「檔案成功」掩蓋尚未查完的搜尋。
+        # Report source coverage separately so successful files cannot hide unfinished collection sources.
+        if getattr(result, "resumed", False):
+            self._log("↪️ 已接續先前未完成的工作；重新掃描的段落會略過已下載媒體。")
+        if getattr(result, "job_id", None) is not None:
+            self._log("📋 來源進度：累計完成 {completed}、本輪沿用 {skipped}、未完成 {pending}。",
+                      completed=getattr(result, "sources_completed", 0), skipped=getattr(result, "sources_skipped", 0), pending=len(incomplete))
+        if getattr(result, "pending_media", 0):
+            self._log("📋 仍有 {count} 個媒體待處理，可在下載紀錄查看。", count=result.pending_media)
+        if incomplete:
+            self._log("📋 仍有 {count} 個來源未完成；可在「更多功能 → 下載紀錄與收集進度」查看。", count=len(incomplete))
+        elif result.stopped:
+            self._log("📋 本次已停止；已下載媒體與可用進度會保留。")
+        elif not result.errors:
+            self._log("📋 本次排定來源已處理完畢；X 未回傳的內容仍可能無法收集。")
+        if self._history_dialog is not None:
+            self._history_dialog.refresh()
         for error in result.errors[:5]:
             self._log("⚠️ {message}", message=str(error))
         if len(result.errors) > 5:
@@ -726,6 +852,8 @@ class TwitterDownloader(QWidget):
 
     @pyqtSlot()
     def _download_thread_finished(self):
+        # 完成訊息可能早於 QThread 釋放；在 finished 才解鎖下一次開始按鈕。
+        # A result can arrive before QThread teardown; unlock the next run only after finished.
         self.is_downloading = False
         self._download_thread = None
         self._download_worker = None
@@ -733,6 +861,8 @@ class TwitterDownloader(QWidget):
         self._maybe_finish_close()
 
     def stop_download(self):
+        # 採合作式取消，讓引擎收尾暫存檔與資料庫交易，不強制終止寫入中的執行緒。
+        # Cancel cooperatively so the engine can finish temporary-file and database cleanup safely.
         if self.is_downloading and not self._stop_event.is_set():
             self._stop_event.set()
             self._avatar_loader.cancel()
@@ -742,6 +872,8 @@ class TwitterDownloader(QWidget):
             self._update_controls()
 
     def _ensure_login_worker(self):
+        # 登入 worker 可重用；只在需要時建立，並將三種瀏覽器操作排到同一執行緒。
+        # Reuse one login worker and queue all browser operations onto its owning thread.
         if self._login_thread is not None:
             return
         thread = QThread(self)
@@ -751,6 +883,7 @@ class TwitterDownloader(QWidget):
         self.browser_open_requested.connect(worker.open_browser)
         self.cookie_save_requested.connect(worker.save_cookies)
         self.browser_close_requested.connect(worker.close_browser)
+        self.login_clear_requested.connect(worker.clear_login)
         worker.completed.connect(self._login_completed)
         worker.failed.connect(self._login_failed)
         worker.progress.connect(self._login_progress)
@@ -795,6 +928,8 @@ class TwitterDownloader(QWidget):
         self.cookie_save_requested.emit()
 
     def import_cookie_file(self):
+        # 匯入流程交由登入模組驗證與限制 Cookie 網域；介面不讀出或顯示內容。
+        # Let the login module validate cookie domains; never display or inspect their values in the UI.
         if self.is_downloading or self._login_busy or self._close_pending:
             return
         source, _ = QFileDialog.getOpenFileName(
@@ -812,6 +947,91 @@ class TwitterDownloader(QWidget):
         except Exception as exc:
             self._log('❌ 匯入失敗：{exc}；請選擇含 X 登入 Cookie 的 Netscape TXT 或舊版 cookies.json。', exc=exc)
 
+    def clear_saved_login(self):
+        # 刪除登入資料必須是使用者主動選擇並確認，不與關閉視窗或一般下載連動。
+        # Clear login only after an explicit user action and confirmation, never as part of closing or downloading.
+        if self.is_downloading or self._login_busy or self._close_pending:
+            return
+        if not confirm_clear_login(parent=self, theme=self.theme_mode):
+            return
+        self._ensure_login_worker()
+        self._login_busy = True
+        self._login_operation = "clear"
+        self._login_progress_message = ""
+        self._update_controls()
+        self._log("⏳ 正在清除本工具的本機登入資料；下載檔案與紀錄會保留。")
+        self.login_clear_requested.emit()
+
+    def show_download_history(self):
+        # 歷史視窗只查詢既有資料；真正的重試仍由主控制器啟動同一套下載引擎。
+        # The history dialog only reads stored data; retries use this controller's normal download engine.
+        if self._close_pending:
+            return
+        if self._history_dialog is None:
+            from history_dialog import HistoryDialog
+            self._history_dialog = HistoryDialog(parent=self, db_path=self.data_dir / "downloads.sqlite3", theme=self.theme_mode)
+            self._history_dialog.retryRequested.connect(self._retry_history_items)
+        self._history_dialog.set_retry_enabled(not self.is_downloading and not self._login_busy)
+        self._history_dialog.refresh()
+        self._history_dialog.show()
+        self._history_dialog.raise_()
+        self._history_dialog.activateWindow()
+
+    @pyqtSlot(object)
+    def _retry_history_items(self, media_ids):
+        if self.is_downloading or self._login_busy or self._close_pending or self._download_thread is not None:
+            return
+        if not isinstance(media_ids, (tuple, list)) or not media_ids or any(not isinstance(item, str) for item in media_ids):
+            return
+        # 選取重試以資料庫中已驗證的原始標籤／討論串為範圍，不要求重新填寫目前表單。
+        # Selected retries use the record's validated tag/thread scope without requiring the current form to be filled again.
+        options = DownloadOptions(
+            hashtag="", output_dir=Path(self.download_path).expanduser(), database_path=self.data_dir / "downloads.sqlite3",
+            cookie_file=self.cookie_file if self.cookie_file.is_file() else None,
+            retry_media_ids=tuple(dict.fromkeys(media_ids)), search_enabled=False, discover_authors=False,
+            authors=(), tweet_urls=(), since=None, resume=False,
+            folder_by_user=self.folder_by_user_checkbox.isChecked(), delay=self.human_behavior_checkbox.isChecked(),
+            warp_proxy=self.warp_proxy_checkbox.isChecked(), warp_proxy_port=self.warp_proxy_port_input.value(),
+        )
+        self._start_download_options(options)
+
+    def check_updates(self):
+        # 官方版本查詢也放在背景；不讀登入資料、不下載更新檔、不更動執行中的 EXE。
+        # Check official metadata in the background without login data, update downloads or replacing the running EXE.
+        if self._update_thread is not None or self._close_pending:
+            return
+        thread = QThread(self)
+        worker = UpdateCheckWorker()
+        worker.moveToThread(thread)
+        self._update_thread, self._update_worker = thread, worker
+        thread.started.connect(worker.run)
+        worker.completed.connect(self._updates_ready)
+        worker.failed.connect(self.append_status)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._update_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._log("⏳ 正在檢查 App 與 gallery-dl 的官方版本資訊…")
+        self._update_controls()
+        thread.start()
+
+    @pyqtSlot(object)
+    def _updates_ready(self, result):
+        if self._close_pending:
+            return
+        if self._update_dialog is not None:
+            self._update_dialog.close()
+            self._update_dialog.deleteLater()
+        self._update_dialog = UpdateResultDialog(result, parent=self, theme=self.theme_mode)
+        self._update_dialog.show()
+        self._log("✅ 版本檢查結束，請查看官方版本資訊。")
+
+    @pyqtSlot()
+    def _update_thread_finished(self):
+        self._update_thread = self._update_worker = None
+        self._update_controls()
+        self._maybe_finish_close()
+
     @pyqtSlot(str, int)
     def _login_completed(self, operation: str, count: int):
         self._login_busy = False
@@ -821,6 +1041,10 @@ class TwitterDownloader(QWidget):
             self._login_browser_open = True
             self._login_status_message = ""
             self._log('🔓 請在專用瀏覽器中完成 X 或 Google 登入。登入完成後，請關閉剛才的專用瀏覽器視窗，再回來按儲存。')
+        elif operation == "clear":
+            self._login_browser_open = False
+            self._login_status_message = "本機登入資料已清除"
+            self._log("✅ 已清除本工具的 Cookie 與專用瀏覽器資料；下載檔案、紀錄與設定已保留。")
         else:
             self._login_browser_open = False
             self._login_status_message = "已儲存登入資料（本機）"
@@ -837,6 +1061,7 @@ class TwitterDownloader(QWidget):
             "save": "儲存未完成，請查看紀錄並重試。",
             "open": "登入視窗未能開啟，請查看紀錄。",
             "close": "結束登入工作時發生問題，請查看紀錄。",
+            "clear": "清除登入資料未完成，請查看紀錄。",
         }.get(operation, "登入操作未完成，請查看紀錄。")
         if operation == "open":
             self._login_browser_open = False
@@ -845,7 +1070,7 @@ class TwitterDownloader(QWidget):
             # can finish cleaning up the exporter it owns.
             self._login_shutdown_requested = False
             self._close_pending = False
-        self._log('❌ 登入瀏覽器{operation}失敗：{message}', operation='儲存' if operation == 'save' else '操作', message=message)
+        self._log('❌ 登入瀏覽器{operation}失敗：{message}', operation={"save": "儲存", "clear": "清除"}.get(operation, "操作"), message=message)
         if operation == "save":
             self._log('請先關閉剛才的專用瀏覽器視窗，再按「儲存登入狀態」重試；需要外部 Cookie 檔時，請另按「匯入 Cookie 檔」。')
         elif operation == "open":
@@ -915,6 +1140,8 @@ class TwitterDownloader(QWidget):
                 self._log('⚠️ 無法保存設定：{exc}', exc=exc)
 
     def _load_settings(self):
+        # 舊版／損壞設定採型別與大小檢查；缺少的欄位保留安全預設值。
+        # Validate settings size and types; keep safe defaults for missing or malformed legacy fields.
         if not self.settings_file.is_file():
             return
         try:
@@ -959,9 +1186,13 @@ class TwitterDownloader(QWidget):
             "auto_driver_update": self.auto_driver_checkbox,
             "warp_proxy": self.warp_proxy_checkbox,
             "include_author_replies": self.reply_media_checkbox,
+            "date_window_search": self.date_window_search_checkbox,
+            "resume": self.resume_checkbox,
         }
 
     def _save_settings(self):
+        # 這裡只存操作偏好，登入憑證另由登入模組管理，不混入一般設定 JSON。
+        # Store preferences here; the login module manages credentials separately from settings JSON.
         self.data_dir.mkdir(parents=True, exist_ok=True)
         settings = {
             "language": self.language_mode,
@@ -978,6 +1209,8 @@ class TwitterDownloader(QWidget):
             # Preserve an unfinished edit on close; validate only on starting.
             settings["hashtags"] = []
         settings.update({key: widget.isChecked() for key, widget in self._checkbox_settings().items()})
+        # 先寫暫存檔並落盤，再原子取代；寫入中斷時仍保有上一次完整設定。
+        # Flush a temporary file before atomic replacement so interrupted writes preserve the last complete settings.
         temporary = self.settings_file.with_suffix(".json.tmp")
         try:
             with temporary.open("w", encoding="utf-8") as stream:
@@ -995,20 +1228,26 @@ class TwitterDownloader(QWidget):
             self.browser_close_requested.emit()
 
     def _maybe_finish_close(self):
-        if self._close_pending and self._download_thread is None and self._login_thread is None and self._driver_thread is None:
+        # 等下載、登入與驅動檢查都完成收尾，再重新送出關閉事件。
+        # Retry closing only after download, login and driver workers have finished their cleanup.
+        if self._close_pending and self._download_thread is None and self._login_thread is None and self._driver_thread is None and self._update_thread is None:
             self._allow_close = True
             QTimer.singleShot(0, self.close)
 
     def closeEvent(self, event: QCloseEvent):
+        # 關閉分兩階段：先提出停止請求，背景工作結束後才保存偏好與釋放視窗。
+        # Close in two stages: request cancellation, then save preferences and release widgets after workers stop.
         self._avatar_loader.cancel()
         self._preview_loader.cancel()
-        background_active = self._download_thread is not None or self._login_thread is not None or self._driver_thread is not None
+        background_active = self._download_thread is not None or self._login_thread is not None or self._driver_thread is not None or self._update_thread is not None
         if not self._allow_close and background_active:
             event.ignore()
             if not self._close_pending:
                 self._close_pending = True
                 self._log('⏳ 正在安全結束背景工作，完成後會自動關閉視窗。')
                 self.stop_download()
+                if self._update_worker is not None:
+                    self._update_worker.cancel()
                 self._update_controls()
             self._request_login_shutdown()
             return
@@ -1018,12 +1257,17 @@ class TwitterDownloader(QWidget):
             self._log('⚠️ 無法保存設定：{exc}', exc=exc)
         if self._usage_guide is not None:
             self._usage_guide.close()
+        for dialog in (self._history_dialog, self._update_dialog):
+            if dialog is not None:
+                dialog.close()
         self._avatar_loader.close()
         self._preview_loader.close()
         event.accept()
 
 
 def main() -> int:
+    # smoke-test 使用獨立暫存資料；測試啟動、翻譯與視窗收尾時不碰真實帳號。
+    # Smoke tests use isolated temporary data and never read the real account during startup or translation checks.
     smoke_test = "--smoke-test" in sys.argv
     if smoke_test:
         # Probe the independent helper without starting a job, reading cookies
@@ -1079,7 +1323,13 @@ def main() -> int:
                     if failed:
                         app.exit(1)
             QTimer.singleShot(0, verify_owned_surfaces)
-        return app.exec()
+        exit_code = app.exec()
+        # 事件迴圈已結束，背景工作也已由 closeEvent 收尾。趁 Python／SIP
+        # 仍完整運作時釋放主視窗與其子元件，不把原生 Qt 清理留到直譯器結束。
+        # After the event loop and worker cleanup finish, release native widgets while Python and SIP are still fully alive.
+        window.deleteLater()
+        app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        return exit_code
     finally:
         if temporary is not None:
             temporary.cleanup()

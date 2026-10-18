@@ -17,6 +17,8 @@ from PyQt6.QtWidgets import (
 from i18n import tr, locale as ui_locale
 
 
+# 共用配色與圖示採延後匯入，避免日期元件和主版面互相載入。
+# Import shared colors/icons lazily to avoid circular UI imports.
 def _colors(theme: str):
     from ui_design import theme_colors
     return theme_colors(theme)
@@ -29,6 +31,8 @@ def _icon(name: str, color: str, size: int = 20):
 
 def _palette(widget: QWidget, colors):
     """Set every relevant role, rather than inheriting the OS dark palette."""
+    # 同時覆蓋停用狀態與子元件，避免系統深色背景混入淺色日曆。
+    # Cover disabled roles and children too, preventing mixed OS/App palettes.
     palette = QPalette()
     roles = {
         QPalette.ColorRole.Window: colors["window"],
@@ -63,6 +67,8 @@ def _font(widget: QWidget):
     widget.setFont(font)
 
 
+# 保留 Qt 的日期與範圍判斷，只自行繪製選取、今天與相鄰月份的外觀。
+# Qt keeps date/range behavior; custom painting handles selection, today, and adjacent months.
 class _ThemedCalendar(QCalendarWidget):
     """Paint dates explicitly so weekends and selection cannot retain OS colors."""
 
@@ -125,6 +131,8 @@ class _ThemedCalendar(QCalendarWidget):
         painter.restore()
 
 
+# 獨立的 Popup 提供年／月快速跳轉；關閉時隱藏，下一次仍沿用同一組元件。
+# Reuse one popup for year/month jumps; closing hides it rather than rebuilding its widgets.
 class _DatePopup(QFrame):
     def __init__(self, owner):
         super().__init__(owner, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
@@ -202,6 +210,8 @@ class _DatePopup(QFrame):
 
     def retranslate_ui(self):
         """Locale labels without changing the selected date or browsed month."""
+        # 月份名稱交給 QLocale，切換語言不重設使用者正在瀏覽的年月。
+        # Let QLocale name months without resetting the currently browsed page.
         year, month = self.calendar.yearShown(), self.calendar.monthShown()
         language = ui_locale()
         for widget in [self, *self.findChildren(QWidget)]:
@@ -228,6 +238,8 @@ class _DatePopup(QFrame):
         self.calendar.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _choose_year(self, year: int):
+        # 起訖年可能只允許部分月份，跳年份時也必須遵守原日期欄的範圍。
+        # Boundary years may allow only some months; year jumps must honor that range.
         month = self.calendar.monthShown()
         minimum, maximum = self.owner.minimumDate(), self.owner.maximumDate()
         if year == minimum.year():
@@ -237,6 +249,8 @@ class _DatePopup(QFrame):
         self.calendar.setCurrentPage(year, month)
 
     def _page_changed(self, year: int, month: int):
+        # 更新年份顯示時暫停訊號，避免反過來觸發另一輪換頁。
+        # Block year signals while synchronizing the header to avoid navigation feedback.
         blocked = self.year_input.blockSignals(True)
         self.year_input.setValue(year)
         self.year_input.blockSignals(blocked)
@@ -252,6 +266,8 @@ class _DatePopup(QFrame):
             action.setEnabled(month_end >= minimum and month_start <= maximum)
 
     def sync_from_owner(self):
+        # 日期欄是資料來源；彈出日曆只同步其選取值、範圍與今天按鈕狀態。
+        # The editor owns the date/range; synchronize the calendar and Today availability.
         selected = self.owner.date()
         blocked = self.year_input.blockSignals(True)
         self.year_input.setRange(self.owner.minimumDate().year(), self.owner.maximumDate().year())
@@ -302,6 +318,8 @@ class _DatePopup(QFrame):
         super().keyPressEvent(event)
 
 
+# 仍使用 QDateEdit 處理輸入、鍵盤日期區段與 dateChanged，僅替換日曆入口。
+# Keep QDateEdit input, keyboard sections, and dateChanged; replace only calendar presentation.
 class GalleryDateEdit(QDateEdit):
     """Editable ISO date with a consistent, theme-complete calendar popup."""
 
@@ -348,7 +366,8 @@ class GalleryDateEdit(QDateEdit):
 
     def setCalendarPopup(self, enabled: bool):
         self._calendar_popup_enabled = bool(enabled)
-        # Keep Qt's native arrow and system-calendar popup permanently disabled.
+        # 保留原 API 的開關意義，但不啟用會沿用系統外觀的原生日曆箭頭。
+        # Preserve the API flag while keeping Qt's native/system-styled popup disabled.
         super().setCalendarPopup(False)
         if hasattr(self, "calendar_button"):
             self.calendar_button.setVisible(bool(enabled))
@@ -410,6 +429,8 @@ class GalleryDateEdit(QDateEdit):
 
     def changeEvent(self, event):
         super().changeEvent(event)
+        # 停用日期限制時，已開啟的日曆也必須關閉，不能留下可操作入口。
+        # Disabling the editor must also close its popup so no active date entry remains.
         if event.type() == QEvent.Type.EnabledChange and hasattr(self, "calendar_button"):
             self.calendar_button.setEnabled(self.isEnabled())
             c = _colors(self._theme)
@@ -426,6 +447,8 @@ class GalleryDateEdit(QDateEdit):
         self.interpretText()
         self.popup.sync_from_owner()
         self.popup.adjustSize()
+        # 依所在螢幕的可用範圍定位，避免靠近視窗邊緣時把日曆開到畫面外。
+        # Clamp popup placement to its screen's available area near display edges.
         anchor = self.mapToGlobal(QPoint(0, self.height() + 6))
         screen = QGuiApplication.screenAt(anchor) or self.screen()
         available = screen.availableGeometry()
@@ -454,6 +477,8 @@ class GalleryDateEdit(QDateEdit):
         super().keyPressEvent(event)
 
 
+# 提醒清單的圓點以 Qt 繪製，避免不同字型的文字符號造成位置或粗細差異。
+# Paint notice bullets with Qt to avoid font-dependent symbol alignment and weight.
 class _NoticeBullet(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -468,6 +493,8 @@ class _NoticeBullet(QWidget):
         painter.drawEllipse(QPointF(4, 10), 2.5, 2.5)
 
 
+# 建構子只建立提醒視窗；是否阻擋主流程，由呼叫端決定何時 show／exec。
+# Construction only builds the notice; the caller chooses show/exec and its timing.
 class UserNoticeDialog(QDialog):
     """The original notice, with readable light and dark themes."""
 
@@ -543,6 +570,8 @@ class UserNoticeDialog(QDialog):
         self.retranslate_ui()
 
     def _text(self, source: str) -> QLabel:
+        # 保存原文供之後重譯；提醒內容固定以純文字呈現，不當作 HTML。
+        # Retain translation source text and render notices as plain text, never HTML.
         label = QLabel(tr(source))
         label.setTextFormat(Qt.TextFormat.PlainText)
         label.setWordWrap(True)

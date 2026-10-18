@@ -23,7 +23,17 @@ Cookie 的格式與已知到期時間通過檢查，不代表 X 伺服器仍接�
 
 ### 移除本專案保存的登入資料
 
+App 的「清除登入資料」會先要求明確確認，預設為取消。確認後只處理同一個專案 `data` 內精確的 `cookies.txt` 與 `browser-profile`；先核對實際路徑、拒絕符號連結／junction／重解析點，並拒絕仍被專用 Chrome／Edge 占用的設定檔，不強制結束人工瀏覽器。下載檔案、SQLite 紀錄與介面設定會保留。專用設定檔可能包含在該視窗登入的 Google 狀態，因此清除時會一併移除其本機副本。
+
 先關閉 App 及本程式開啟的所有專用瀏覽器視窗，確認背景匯出程序已結束，再手動刪除本專案的 `data/cookies.txt` 與 `data/browser-profile/`。只刪除此專案的這兩個位置，不要清除日常 Chrome／Edge 設定檔；已有副本或備份也需另行處理。這會移除本機副本，不代表 X／Google 伺服器上的登入已撤銷；需要撤銷時，另外到各網站的帳號安全／工作階段管理頁操作。程式不會代替使用者刪除或撤銷帳號資料。
+
+## 手動官方版本檢查
+
+版本檢查只在使用者按下按鈕後進行，查詢固定的 `https://api.github.com/repos/NoonIsAwesome/XFanArtDownloader/releases/latest` 與 `https://pypi.org/pypi/gallery-dl/json`。不使用 GitHub token、X Cookie、認證 header 或遙測；不讀取使用者登入檔案。App 本機版本由固定常數提供，gallery-dl 版本由獨立解析器的離線 probe 回報，GUI 不匯入 gallery-dl 程式碼。
+
+查詢維持 HTTPS 驗證，拒絕重新導向，限制回應為 1 MiB 並設定總時間預算及每次讀取等待上限。此查詢不套用下載工作的 WARP 本機代理，也不讀取環境 HTTP 代理；網路仍受作業系統本身的 VPN／路由影響。官方端點仍可看到連線的網路來源。GitHub 尚無正式 Release 或某來源失敗時會分別顯示狀態，不會宣稱現有版本已是最新。
+
+結果只提供已驗證的本專案 GitHub Release／下載網址或 gallery-dl 官方 PyPI 頁面，需使用者點擊才開啟系統瀏覽器。App 不自動下載、執行、安裝或覆寫程式；更新 gallery-dl 仍須重新建置對應的 App，版本檢查不會改變現有 EXE。
 
 ## 選用 WARP 本機代理
 

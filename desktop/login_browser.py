@@ -14,6 +14,8 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -24,6 +26,10 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 import warnings
 
 
+# 登入分成「使用者操作普通瀏覽器」與「關閉後匯出 X Cookie」兩階段。
+# 兩階段共用 App 專用設定檔，不接管日常 Chrome／Edge 的登入資料。
+# Human login and later X-cookie export share an App-only profile;
+# neither phase takes over the user's everyday Chrome/Edge profile.
 LOGIN_URL = "https://x.com/i/flow/login"
 EXPORT_TIMEOUT_SECONDS = 12.0
 _BROWSER_PATH = re.compile(r"/devtools/browser/[A-Za-z0-9-]+\Z")
@@ -58,6 +64,8 @@ class _NoRedirect(HTTPRedirectHandler):
 
 def _restrict_permissions(path: Path, *, directory: bool = False) -> None:
     """Restrict the new file before writing secrets, including its Windows ACL."""
+    # Cookie 寫入前先收窄權限；Windows 另設定 ACL，不能只依賴 chmod。
+    # Apply restrictive permissions before writing; Windows also needs an ACL.
     os.chmod(path, 0o700 if directory else 0o600)
     if os.name != "nt":
         return
@@ -97,6 +105,8 @@ def _cookie_base(domain: str) -> str | None:
 
 
 def _normalise_cookie(record: dict[str, Any], now: float) -> http.cookiejar.Cookie | None:
+    # 只保留 X／Twitter 的有效欄位，拒絕控制字元、空白 token 及已過期資料。
+    # Keep valid X/Twitter fields only; reject control characters and expired/empty tokens.
     domain = record.get("domain")
     name = record.get("name")
     value = record.get("value")
@@ -148,8 +158,10 @@ def _validated_cookies(records: list[dict[str, Any]], *,
             if cookie is not None:
                 jar.set_cookie(cookie)
     cookies = list(jar)
-    # Never splice a token pair from different cookie domains or accounts. The
-    # downloader expects .x.com, so promote a legacy Twitter pair together only.
+    # auth_token 與 ct0 必須來自同一網域，不能拼接不同帳號的認證。
+    # 舊 Twitter 配對通過驗證後才一起轉為下載器使用的 .x.com 格式。
+    # Require a same-domain token pair; migrate a validated legacy Twitter pair
+    # together to the downloader's canonical .x.com domain.
     domains = (".x.com",) if canonical_only else (".x.com", "x.com", ".twitter.com", "twitter.com")
     for domain in domains:
         pair = {cookie.name: cookie for cookie in cookies
@@ -167,6 +179,8 @@ def _validated_cookies(records: list[dict[str, Any]], *,
 
 
 def _write_cookies(records: list[dict[str, Any]], destination: Path) -> int:
+    # 先驗證，再寫入同目錄的受限暫存檔；全部成功才原子替換，保留失敗前的舊檔。
+    # Validate, write a restricted sibling temporary file, then atomically replace the old file.
     cookies = _validated_cookies(records)
     destination = Path(destination).expanduser().absolute()
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -194,6 +208,8 @@ def _write_cookies(records: list[dict[str, Any]], destination: Path) -> int:
 
 
 def _read_cookie_records(source: Path, *, allow_json: bool = True) -> list[dict[str, Any]]:
+    # 同時相容 Netscape TXT 與舊版 JSON；限制大小，錯誤訊息不包含檔案內容。
+    # Accept bounded Netscape/legacy JSON input without exposing file contents in errors.
     source = Path(source)
     try:
         if source.stat().st_size > 10 * 1024 * 1024:
@@ -238,7 +254,83 @@ def validate_cookies(path: Path) -> int:
     return len(_validated_cookies(records, canonical_only=True))
 
 
+def _no_reparse_path(path: Path) -> None:
+    # 刪除入口及祖先不可是連結／junction，避免 resolve 後把別處誤當專案資料。
+    # Reject links/reparse points in the target and ancestors before resolving deletion paths.
+    for candidate in (path, *path.parents):
+        try:
+            info = candidate.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+            raise ValueError("登入資料位置含符號連結或 junction，已取消刪除。")
+
+
+def _check_login_tree(root: Path) -> None:
+    # 先完整檢查目錄，發現任一重解析點就全部拒絕，尚未開始刪除 Cookie。
+    # Preflight the whole profile; any reparse point rejects the operation before deletion.
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        _no_reparse_path(directory)
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                    raise ValueError("專用登入設定檔含符號連結或 junction，已取消刪除。")
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append(Path(entry.path))
+                elif not stat.S_ISREG(info.st_mode):
+                    raise ValueError("專用登入設定檔含不支援的檔案，已取消刪除。")
+
+
+def clear_login_data(profile_dir: Path, cookie_file: Path) -> dict[str, bool]:
+    """Remove only the fixed App-owned login paths after the GUI confirms."""
+    # 只接受同一個 data 下的固定名稱；不接受任意刪除目錄或日常瀏覽器設定檔。
+    # Accept only the two fixed sibling paths, never an arbitrary directory or daily profile.
+    profile_dir = Path(profile_dir).expanduser().absolute()
+    cookie_file = Path(cookie_file).expanduser().absolute()
+    data_dir = profile_dir.parent
+    if (profile_dir.name != "browser-profile" or cookie_file.name != "cookies.txt"
+            or data_dir.name != "data" or cookie_file.parent != data_dir
+            or ".." in profile_dir.parts or ".." in cookie_file.parts):
+        raise ValueError("只可清除本工具 data/browser-profile 與 data/cookies.txt。")
+    try:
+        _no_reparse_path(profile_dir)
+        _no_reparse_path(cookie_file)
+        if profile_dir.resolve() != profile_dir or cookie_file.resolve() != cookie_file:
+            raise ValueError("登入資料位置不符合專案的實際路徑，已取消刪除。")
+        # 同時套用日常 profile 防護，並確認普通登入或背景匯出都不再占用。
+        # Reuse daily-profile protection and refuse any active interactive/export browser.
+        LoginBrowser(profile_dir)
+        has_profile = profile_dir.exists()
+        has_cookies = cookie_file.exists()
+        if has_profile:
+            if not profile_dir.is_dir():
+                raise ValueError("專用登入設定檔位置不是資料夾，已取消刪除。")
+            if _profile_locked(profile_dir):
+                raise LoginWindowStillOpen(_CLOSE_LOGIN_MESSAGE)
+            _check_login_tree(profile_dir)
+        if has_cookies and not cookie_file.is_file():
+            raise ValueError("Cookie 位置不是一般檔案，已取消刪除。")
+        # 進入實際刪除前再次核對根路徑與占用；不終止任何人工瀏覽器。
+        # Recheck paths and profile occupancy immediately before removing local files.
+        _no_reparse_path(profile_dir)
+        _no_reparse_path(cookie_file)
+        if has_profile and _profile_locked(profile_dir):
+            raise LoginWindowStillOpen(_CLOSE_LOGIN_MESSAGE)
+        if has_profile:
+            shutil.rmtree(profile_dir)
+        if has_cookies:
+            cookie_file.unlink()
+        return {"profile_deleted": has_profile, "cookies_deleted": has_cookies}
+    except OSError:
+        raise RuntimeError("部分本機登入資料無法刪除；請關閉專用瀏覽器並檢查權限後重試。") from None
+
+
 def _find_browser() -> Path:
+    # 只尋找已安裝的 Chrome／Edge；此登入流程不下載瀏覽器或 ChromeDriver。
+    # Discover an installed Chrome/Edge only; this flow downloads no browser or driver.
     candidates: list[Path] = []
     for environment_key in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432",
                             "LOCALAPPDATA"):
@@ -276,6 +368,8 @@ def _validate_websocket(endpoint: str, port: int, browser_path: str) -> bool:
 
 
 def _connect_websocket(endpoint: str, timeout: float):
+    # websocket-client 僅在背景匯出時需要，缺少套件時回傳可理解的安裝提示。
+    # Load websocket-client only for export and report a clear missing-dependency message.
     try:
         import websocket
     except ImportError:
@@ -293,6 +387,8 @@ def _profile_locked(profile_dir: Path) -> bool:
     Requesting write access therefore fails while *any* process owns the profile.
     OPEN_EXISTING leaves stale files untouched and never creates a fake lock.
     """
+    # 以 Windows 檔案共用規則探測占用，不讀取內容，也不刪鎖檔強行解鎖。
+    # Probe sharing restrictions without reading profile contents or deleting lock files.
     if os.name != "nt":
         raise LoginWindowUnavailable("此版本僅支援 Windows 的專用登入瀏覽器；可改匯入 X Cookie。")
     from ctypes import wintypes
@@ -320,6 +416,8 @@ def _profile_locked(profile_dir: Path) -> bool:
 
 def _profile_belongs_to_process(profile_dir: Path, pid: int) -> bool:
     """Use Chromium's exact-profile singleton window, never a global scan."""
+    # 設定檔路徑與 PID 必須同時吻合，避免連到其他瀏覽器留下的除錯端點。
+    # Match both the exact profile and owned PID; never adopt another browser's endpoint.
     if os.name != "nt":
         raise LoginWindowUnavailable("無法在此平台確認匯出瀏覽器的擁有權；可改匯入 X Cookie。")
     from ctypes import wintypes
@@ -366,6 +464,8 @@ class _CDPConnection:
             raise _CDPError("無法連線到專用匯出瀏覽器，請稍後重試。") from None
 
     def call(self, method: str, params: dict | None = None, *, session_id: str | None = None) -> dict:
+        # 依 request id／session id 配對回應，所有呼叫共用同一截止時間。
+        # Match request/session IDs and enforce one shared deadline across calls.
         try:
             if self.check:
                 self.check()
@@ -419,6 +519,8 @@ class LoginBrowser:
     """Human login is a normal browser; only a later, owned export uses CDP."""
 
     def __init__(self, profile_dir: Path, on_progress: Callable[[str], None] | None = None):
+        # 先解析實際路徑，再拒絕日常瀏覽器設定檔及其子目錄。
+        # Resolve the path before rejecting everyday browser profiles and their descendants.
         self.profile_dir = Path(profile_dir).expanduser().resolve()
         if base := os.environ.get("LOCALAPPDATA"):
             for relative in ("Google/Chrome/User Data", "Microsoft/Edge/User Data"):
@@ -442,6 +544,8 @@ class LoginBrowser:
                 pass  # A UI callback must never interrupt safe cleanup.
 
     def _assert_profile_idle(self) -> None:
+        # 前次匯出須先清理完；人工登入視窗仍開啟時只提示使用者，不強制關閉。
+        # Finish previous export cleanup; ask users to close human-login windows themselves.
         if self._export_process is not None and not self._stop_export_process():
             raise LoginWindowUnavailable("前次背景擷取瀏覽器尚未完全關閉；請稍後重試結束或儲存登入。")
         if self._login_process is not None and self._login_process.poll() is None:
@@ -464,6 +568,8 @@ class LoginBrowser:
 
     def open(self) -> None:
         """Open visible normal login. Never attach to or kill any login window."""
+        # 第一階段不帶遠端除錯或自動化參數，帳密由使用者直接輸入網站。
+        # Human login uses no debugging/automation flags; credentials are entered on the site.
         with self._lock:
             try:
                 self._prepare_profile()
@@ -495,6 +601,8 @@ class LoginBrowser:
         self._assert_export_alive()
 
     def _probe_profile_endpoint(self, timeout: float = 0.5) -> str | None:
+        # 端點檔僅是候選資訊：另核對自有程序、本機位址與瀏覽器隨機路徑。
+        # Treat the endpoint file as a hint; verify ownership, loopback address and browser path.
         self._assert_export_alive()
         try:
             active_port = self.profile_dir / "DevToolsActivePort"
@@ -525,6 +633,8 @@ class LoginBrowser:
 
     def save_cookies(self, destination: Path) -> int:
         """Export after all normal login windows close, including after app restart."""
+        # 第二階段才短暫啟動自有背景瀏覽器；重開 App 後也能使用已關閉的專用設定檔。
+        # Only export starts a temporary owned background browser, including after an App restart.
         with self._lock:
             connection = None
             saved = False
@@ -562,6 +672,8 @@ class LoginBrowser:
                 session_id = attached.get("sessionId")
                 if not isinstance(session_id, str) or not session_id:
                     raise _CDPError("無法連線到專用 X 登入擷取頁面，請稍後重試。")
+                # 直接要求 X／Twitter 範圍的 Cookie，不先取得所有網站資料再篩選。
+                # Request only X/Twitter cookies, rather than retrieving every site's cookies first.
                 payload = connection.call("Network.getCookies", {"urls": list(_COOKIE_URLS)}, session_id=session_id)
                 records = payload.get("cookies")
                 if not isinstance(records, list):
@@ -575,6 +687,8 @@ class LoginBrowser:
                 self.status = "error"
                 raise LoginWindowUnavailable("無法安全擷取登入狀態；請關閉專用瀏覽器後重試。") from None
             finally:
+                # 無論儲存成功與否，都須確認本次背景程序退出才回報操作完成。
+                # Confirm the owned exporter exited before reporting success or failure as finished.
                 if connection is not None:
                     try:
                         connection.call("Browser.close")
@@ -591,6 +705,8 @@ class LoginBrowser:
 
     def _stop_export_process(self) -> bool:
         """Retain the owned handle and endpoint until exit is confirmed."""
+        # 逐步等待、終止並確認退出；失敗時保留 handle，讓下次操作能繼續清理。
+        # Escalate owned-process shutdown gradually; retain its handle if cleanup needs retrying.
         process = self._export_process
         if process is None:
             self._endpoint = None

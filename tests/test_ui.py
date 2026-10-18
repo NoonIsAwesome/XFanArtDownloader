@@ -16,7 +16,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "desktop"))
 
-from PyQt6.QtCore import QDate, Qt
+from PyQt6.QtCore import QDate, QEvent, Qt
 from PyQt6.QtGui import QPalette
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
@@ -51,11 +51,23 @@ class UiTests(unittest.TestCase):
 
     def tearDown(self):
         self.window.close()
-        self.wait_until(lambda: self.window._download_thread is None and self.window._login_thread is None and self.window._driver_thread is None)
+        self.wait_until(lambda: self.window._download_thread is None and self.window._login_thread is None
+                        and self.window._driver_thread is None and self.window._update_thread is None)
         self.app.processEvents()
         self.window.deleteLater()
-        self.app.processEvents()
-        self.directory.cleanup()
+        # 測試未執行 app.exec()，須明確送出延後刪除事件，先釋放原生視窗樹。
+        # Without app.exec(), explicitly flush deferred deletion before removing fixture data.
+        self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        # Windows 可能短暫保留已刪除項目；有限重試仍會揭露持續性的清理錯誤。
+        # Retry only transient Windows directory-not-empty errors; persistent failures still fail.
+        for delay in (0.05, 0.1, 0.2, 0.4, 0):
+            try:
+                self.directory.cleanup()
+                break
+            except OSError as error:
+                if os.name != "nt" or getattr(error, "winerror", None) != 145 or not delay:
+                    raise
+                time.sleep(delay)
 
     def test_snapshot_and_source_master_switch(self):
         self.assertTrue(self.window.search_checkbox.isChecked())

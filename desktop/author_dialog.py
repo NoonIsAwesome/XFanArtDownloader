@@ -19,6 +19,8 @@ from ui_design import apply_dialog_theme, theme_colors
 from i18n import tr, locale as ui_locale
 
 
+# 作者連結集中列在程式內，也作為允許開啟網址的清單；此頁不會背景抓取資料。
+# Fixed author links also form the URL allowlist; opening this page fetches nothing.
 SOCIAL_LINKS = (
     ("官方網站", "https://noonisawesome.dev/"),
     ("YouTube · @NoonVtuber", "https://www.youtube.com/@NoonVtuber"),
@@ -56,14 +58,16 @@ class _AuthorLinkLabel(QLabel):
         super().keyPressEvent(event)
 
     def focusNextPrevChild(self, forward):
-        # Each label contains exactly one link. Avoid QLabel's extra internal
-        # anchor stop so one Tab advances to the next visible link/control.
+        # 每個標籤只有一個連結；略過 QLabel 的額外錨點，讓一次 Tab 前進一項。
+        # Each label has one link; skip QLabel's extra anchor stop so one Tab advances once.
         return QWidget.focusNextPrevChild(self, forward)
 
 
 class AuthorInfoDialog(QDialog):
     def __init__(self, parent=None, theme: str | None = None):
         super().__init__(parent)
+        # 預設沿用主視窗主題；翻譯由本頁管理，切換語言時保留連結與捲動狀態。
+        # Inherit the parent theme and retranslate locally without losing links or scroll state.
         self.theme_mode = self._normalise_theme(
             theme if theme is not None else getattr(parent, "theme_mode", "light")
         )
@@ -108,6 +112,8 @@ class AuthorInfoDialog(QDialog):
         header.addLayout(introduction, 1)
         layout.addLayout(header)
 
+        # 介紹與社群清單可捲動，頁尾的關閉入口不會跟著長內容移出畫面。
+        # Scroll biography/social content while keeping the footer's Close action visible.
         self.scroll_area = QScrollArea()
         self.scroll_area.setObjectName("authorScroll")
         self.scroll_area.setWidgetResizable(True)
@@ -161,6 +167,8 @@ class AuthorInfoDialog(QDialog):
         return "dark" if theme == "dark" else "light"
 
     def _text(self, text: str, role: str) -> QLabel:
+        # 介紹內容用純文字，並記下原文，避免多次切換語言後失去翻譯來源。
+        # Render biography as plain text and retain source keys across language switches.
         label = QLabel(tr(text))
         label.setProperty("authorRole", role)
         label.setTextFormat(Qt.TextFormat.PlainText)
@@ -197,6 +205,8 @@ class AuthorInfoDialog(QDialog):
         layout.addLayout(grid)
 
     def _open_link(self, url: str) -> None:
+        # 只開啟上方列出的固定網址，不接受任意 linkActivated 內容。
+        # Open only the fixed URLs above, not arbitrary linkActivated input.
         if url in self._allowed_urls:
             QDesktopServices.openUrl(QUrl(url))
 
@@ -216,6 +226,8 @@ class AuthorInfoDialog(QDialog):
         self.scroll_area.verticalScrollBar().setValue(position)
 
     def _render_links(self) -> None:
+        # 連結需要 HTML 外觀，但網址與譯文都先轉義，避免文字變成額外標記。
+        # Escape both URLs and translated labels before producing link HTML.
         colors = theme_colors(self.theme_mode)
         for label, source, url in self._links:
             text = tr(source)
@@ -226,6 +238,8 @@ class AuthorInfoDialog(QDialog):
             label.setAccessibleName(tr("開啟{label}", label=text))
 
     def apply_theme(self, theme: str) -> None:
+        # 同步主題時沿用現有標籤與連結，保留鍵盤焦點及既有訊號連接。
+        # Reuse labels/links when changing themes, preserving keyboard focus and connections.
         self.theme_mode = self._normalise_theme(theme)
         apply_dialog_theme(self, self.theme_mode)
         self.setObjectName("authorDialog")

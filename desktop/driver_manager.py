@@ -23,6 +23,10 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 import zipfile
 
+# 此模組只維護舊版相容驅動；新版登入與下載並不依賴它。
+# 所有更新都限制在傳入的專案目錄，不修改全域 Chrome 或其設定檔。
+# Maintain only the project's legacy driver; current login/downloads do not need it.
+# Updates stay inside the supplied project directory, leaving global Chrome/profile data alone.
 try:
     import winreg
 except ImportError:  # Allow tests and imports on non-Windows hosts.
@@ -40,6 +44,8 @@ VERSION = re.compile(r"\d+\.\d+\.\d+\.\d+")
 
 
 def _remaining(deadline: float, ceiling: float = 2.0) -> float:
+    # 網路與子程序共用總時間預算，避免每次重試都重新計時而無限延長。
+    # Share one time budget across network/process work instead of resetting it on each retry.
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise TimeoutError("檢查已超過 25 秒，請稍後再試")
@@ -51,6 +57,8 @@ def _valid_version(value: object) -> str | None:
 
 
 def _run(argv: list[str], deadline: float, *, env: dict | None = None) -> str:
+    # 以參數清單執行版本檢查，不經 shell 解讀路徑或拼接的指令字串。
+    # Run version checks with argument lists, keeping paths out of shell interpretation.
     result = subprocess.run(
         argv, shell=False, capture_output=True, text=True, encoding="utf-8",
         errors="replace", check=True, timeout=_remaining(deadline, 4.0),
@@ -60,6 +68,8 @@ def _run(argv: list[str], deadline: float, *, env: dict | None = None) -> str:
 
 
 def _chrome_version(deadline: float) -> str:
+    # 優先讀取登錄的版本；找不到時才查已安裝 chrome.exe 的檔案版本。
+    # Prefer the registry version; fall back to an installed chrome.exe's file metadata.
     if winreg is not None:
         for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
             for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
@@ -126,6 +136,8 @@ def _open_url(url: str, timeout: float):
 
 
 def _read_url(url: str, deadline: float, max_bytes: int) -> bytes:
+    # 拒絕重新導向，並同時限制宣告長度、實際位元組與總等待時間。
+    # Refuse redirects and bound declared length, actual bytes and total waiting time.
     with _open_url(url, _remaining(deadline)) as response:
         if response.geturl() != url:
             raise RuntimeError("下載網址被重新導向，已拒絕")
@@ -160,6 +172,8 @@ def _read_metadata(url: str, deadline: float) -> dict:
 
 
 def _download_url(url: object, version: str, platform_tag: str) -> str:
+    # 官方清單的內容也要驗證，只允許預期版本與平台的 Google HTTPS 路徑。
+    # Validate official metadata too: allow only the expected Google HTTPS version/platform path.
     if not isinstance(url, str):
         raise RuntimeError("官方清單缺少 ChromeDriver 下載網址")
     parsed = urlsplit(url)
@@ -171,6 +185,8 @@ def _download_url(url: object, version: str, platform_tag: str) -> str:
 
 
 def _select_driver(chrome_version: str, platform_tag: str, deadline: float) -> tuple[str, str]:
+    # 先找同一 MAJOR.MINOR.BUILD；官方尚無該 build 時才退回相同主版本。
+    # Prefer MAJOR.MINOR.BUILD and fall back only to the same Chrome milestone.
     build = ".".join(chrome_version.split(".")[:3])
     major = chrome_version.split(".")[0]
     data = _read_metadata(BUILD_URL, deadline)
@@ -193,6 +209,10 @@ def _select_driver(chrome_version: str, platform_tag: str, deadline: float) -> t
 
 
 def _extract_driver(payload: bytes, platform_tag: str, deadline: float) -> bytes:
+    # ZIP 僅在記憶體中檢查與讀取，不把封包路徑直接解壓到檔案系統。
+    # 限制項目數、路徑、總大小與格式後，才取出指定的 chromedriver.exe。
+    # Inspect ZIP entries in memory; validate counts, paths, sizes and formats
+    # before reading the single expected executable, without extracting archive paths.
     expected = f"chromedriver-{platform_tag}/chromedriver.exe"
     with zipfile.ZipFile(BytesIO(payload)) as archive:
         members = archive.infolist()
@@ -240,6 +260,8 @@ def ensure_chromedriver(base_dir: Path, log: Callable[[str], None] = lambda mess
     deadline = time.monotonic() + TOTAL_TIMEOUT
     temporary: Path | None = None
     try:
+        # 相容的既有驅動可直接沿用，避免不必要的官方清單及 ZIP 請求。
+        # Reuse a compatible local driver without unnecessary metadata/ZIP requests.
         chrome_version = _chrome_version(deadline)
         if not _valid_version(chrome_version):
             raise RuntimeError("無法辨識本機 Chrome 版本")
@@ -261,6 +283,8 @@ def ensure_chromedriver(base_dir: Path, log: Callable[[str], None] = lambda mess
         log(f"從 Google 官方下載 ChromeDriver {version}（{platform_tag}）")
         payload = _read_url(url, deadline, MAX_ZIP_BYTES)
         binary = _extract_driver(payload, platform_tag, deadline)
+        # 新版先寫暫存檔並實際查版本，驗證通過才替換，失敗保留原驅動。
+        # Verify the temporary executable's real version before replacing the existing driver.
         base_dir.mkdir(parents=True, exist_ok=True)
         descriptor, name = tempfile.mkstemp(prefix=".chromedriver-", suffix=".exe", dir=base_dir)
         temporary = Path(name)

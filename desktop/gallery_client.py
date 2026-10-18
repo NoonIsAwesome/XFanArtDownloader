@@ -31,6 +31,8 @@ class Cancelled(Exception):
     pass
 
 
+# 錯誤跨程序只傳固定代碼與公開文案，不把上游例外、網址或認證內容帶進 UI。
+# Cross-process errors use fixed codes and public copy, never raw exceptions, URLs, or credentials.
 SOURCE_REASONS = {
     "source": "X 擷取未完整完成；請檢查登入或網路後重試。",
     "cancelled": "擷取已停止。",
@@ -60,6 +62,8 @@ class GallerySourceError(RuntimeError):
         super().__init__(self.public_reason)
 
 
+# 來源與媒體分別設白名單；不能藉由來源網址改用其他網站的擷取器。
+# Validate source and media URLs separately so source input cannot select another site's extractor.
 def _source_url(value: str) -> str:
     try:
         parsed = urlsplit(value)
@@ -100,6 +104,8 @@ def _safe_text(value) -> str:
 
 
 def _public_metadata(value, depth=0) -> bool:
+    # JSONL 是程序邊界：拒絕私密欄位、非有限數值與過深資料後，才交給引擎。
+    # Reject private fields, nonfinite numbers, and excessive nesting at the JSONL process boundary.
     if depth > 12:
         return False
     if isinstance(value, dict):
@@ -114,6 +120,8 @@ def _public_metadata(value, depth=0) -> bool:
 
 class _WindowsProcessJob:
     """Kill only this helper's process tree, including a one-file bootloader."""
+    # 只管理本次啟動的 helper 程序樹，停止時不使用全域結束程序指令。
+    # Manage only this helper's process tree; never terminate unrelated processes globally.
 
     def __init__(self, process):
         self.handle = None
@@ -177,6 +185,8 @@ class GallerySource:
             raise Cancelled()
 
     def _fail(self, code: str):
+        # 停止與錯誤同時到達時，以使用者停止為準，避免多報一個來源失敗。
+        # Cancellation wins over a simultaneous error, avoiding a false source-failure report.
         self._check_stop()
         raise GallerySourceError(code) from None
 
@@ -197,6 +207,8 @@ class GallerySource:
 
     @staticmethod
     def _reader(stream, output: queue.Queue, stop: threading.Event):
+        # 有界佇列避免 helper 輸出撐滿記憶體；停止旗標也能解除等待中的寫入。
+        # Bound output memory and let cancellation release producers waiting on a full queue.
         def push(item):
             while not stop.is_set():
                 try:
@@ -220,7 +232,9 @@ class GallerySource:
         finally:
             push(("eof", None))
 
-    def _records(self, url=None, *, smoke=False, conversation=False):
+    def _records(self, url=None, *, smoke=False, conversation=False, idle_timeout=None):
+        # 每次呼叫重建程序、佇列與讀取執行緒，重新開始不沿用上一輪輸出。
+        # Every call gets a fresh process, queue, and reader; restarts never reuse stale output.
         self._check_stop()
         try:
             args = self._command()
@@ -239,6 +253,8 @@ class GallerySource:
             if conversation:
                 args += ['--conversation']
         environment = os.environ.copy()
+        # 封裝版 helper 是獨立程式，不能誤用主 App 的 PyInstaller 執行環境。
+        # Launch the frozen helper independently rather than inheriting the app's PyInstaller runtime.
         environment.update({"PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1", "PYINSTALLER_RESET_ENVIRONMENT": "1"})
         process = None
         guard = None
@@ -262,11 +278,13 @@ class GallerySource:
                 try:
                     kind, value = output.get(timeout=0.1)
                 except queue.Empty:
-                    limit = 3.0 if completed is not None else IDLE_TIMEOUT
+                    limit = 3.0 if completed is not None else (idle_timeout or IDLE_TIMEOUT)
                     if time.monotonic() - last_activity > limit:
                         self._fail("timeout")
                     continue
                 self._check_stop()
+                # 取出資料後仍重查停止狀態，涵蓋等待佇列期間按下停止的競態。
+                # Check cancellation again after dequeueing to cover stops received while waiting.
                 last_activity = time.monotonic()
                 if kind == "error":
                     self._fail("protocol")
@@ -297,6 +315,8 @@ class GallerySource:
                     count += 1
                     yield record
                 elif record_type == "post":
+                    # post 只提供串關聯證據；只有明確啟用討論串模式才接受。
+                    # Accept post-context records only in explicit thread mode; they provide evidence only.
                     if not conversation or not isinstance(record.get("metadata"), dict) or not _public_metadata(record["metadata"]):
                         self._fail("protocol")
                     count += 1
@@ -310,6 +330,8 @@ class GallerySource:
                 elif record_type != "log":
                     self._fail("protocol")
             try:
+                # 完成標記、筆數與程序正常退出必須全部成立，才能宣告來源完成。
+                # Completion requires a valid marker, matching record count, and successful process exit.
                 returncode = process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 self._fail("exit")
@@ -322,6 +344,8 @@ class GallerySource:
         except OSError:
             self._fail("startup")
         finally:
+            # 成功、失敗、停止或提前關閉產生器，都回收本次程序與標準輸出管線。
+            # Reclaim this process and its output pipe on success, error, cancellation, or generator close.
             reader_stop.set()
             if guard is not None:
                 guard.close()
@@ -352,6 +376,8 @@ class GallerySource:
                 yield record["url"], record["metadata"]
 
     def iter_thread(self, url: str):
+        # None 網址代表純上下文；真正媒體仍使用原本的 (網址, metadata) 協定。
+        # A None URL denotes context; media keeps the existing (URL, metadata) protocol.
         for record in self._records(url, conversation=True):
             if record["type"] == "post":
                 yield None, record["metadata"]
@@ -366,3 +392,14 @@ class GallerySource:
         if not isinstance(names, list) or len(names) != 3 or set(names) != _EXTRACTORS:
             raise GallerySourceError("protocol")
         return tuple(names)
+
+    @classmethod
+    def version(cls, stop_event=None, *, timeout=8.0) -> str:
+        # 手動版本檢查只啟動離線 probe，另設短等待上限且沿用程序清理與取消。
+        # Manual checks use an offline probe with a short timeout and existing cleanup/cancellation.
+        source = cls(None, lambda message: None, stop_event or threading.Event())
+        records = list(source._records(smoke=True, idle_timeout=max(0.1, min(8.0, float(timeout)))))
+        value = records[-1].get("version") if records else None
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9][A-Za-z0-9.+_-]{0,63}", value):
+            raise GallerySourceError("protocol")
+        return value

@@ -21,6 +21,8 @@ CACHE_ITEMS = 24
 
 
 def valid_avatar_url(value) -> bool:
+    # 只接受公開頭像 CDN 的指定 HTTPS 路徑；解碼路徑後再拒絕跳脫與帳密。
+    # Allow only public avatar HTTPS paths; reject credentials and decoded path traversal.
     if not isinstance(value, str) or not value or len(value) > 8192 or any(ord(c) < 33 for c in value):
         return False
     try:
@@ -41,6 +43,8 @@ def valid_avatar_url(value) -> bool:
 
 
 def decode_avatar(data: bytes) -> QImage | None:
+    # 先限制檔案大小、格式及像素，再解碼；不信任副檔名或伺服器宣告的型別。
+    # Bound bytes, detected format and pixels before decoding; do not trust extensions or MIME claims.
     if not data or len(data) > MAX_BYTES:
         return None
     buffer = QBuffer()
@@ -91,6 +95,8 @@ def avatar_pixmap(image: QImage | None, colors: dict, size=40) -> QPixmap:
 
 
 class _NoCookies(QNetworkCookieJar):
+    # 頭像是公開資源，此 manager 永遠不收送 Cookie，也不沿用 X 認證。
+    # Public avatars never send/accept cookies or reuse X authentication.
     def cookiesForUrl(self, url):
         return []
 
@@ -103,6 +109,8 @@ class AvatarLoader(QObject):
 
     def __init__(self, parent=None, *, manager=None):
         super().__init__(parent)
+        # 只建立非同步載入器；尚未收到下載工作的頭像 URL 前不發出請求。
+        # Construction sends no request; a download job must first supply an avatar URL.
         self.manager = manager or QNetworkAccessManager(self)
         self.manager.setCookieJar(_NoCookies(self.manager))
         self.manager.authenticationRequired.connect(lambda reply, authenticator: reply.abort())
@@ -119,6 +127,8 @@ class AvatarLoader(QObject):
         self.configure(False, 40000)
 
     def configure(self, warp_proxy: bool, port: int):
+        # 路由按工作固定；切換前取消舊請求並清連線快取，WARP 失敗不改走直連。
+        # Fix routing per job, clearing old requests/connections on change; WARP never falls back directly.
         route = int(port) if warp_proxy and type(port) is int and 1 <= port <= 65535 else 0
         if warp_proxy and not route:
             raise ValueError("Invalid local proxy port")
@@ -137,6 +147,8 @@ class AvatarLoader(QObject):
         self.manager.setProxy(proxy)
 
     def load(self, url):
+        # 同時只保留一個請求；快取鍵包含路由，避免跨工作路由混用。
+        # Keep one active request and include routing in cache keys to isolate job routes.
         if self._closed:
             return
         key = (self._route, url) if isinstance(url, str) else None
@@ -152,6 +164,8 @@ class AvatarLoader(QObject):
             self._cache[key] = image
             self.ready.emit(image)
             return
+        # 每次請求都禁用自動重新導向、Cookie 與認證重用，另設資料與時間上限。
+        # Disable redirects, cookies and auth reuse; also bound response size and time.
         request = QNetworkRequest(QUrl(url))
         request.setAttribute(QNetworkRequest.Attribute.RedirectPolicyAttribute,
                              QNetworkRequest.RedirectPolicy.ManualRedirectPolicy)
@@ -173,6 +187,8 @@ class AvatarLoader(QObject):
         self._timer.start(TIMEOUT_MS)
 
     def _headers(self, reply):
+        # 檢查 reply 身分，讓已取消或前一位作者的晚到回應失效。
+        # Match reply identity so cancelled/previous-author callbacks cannot change current state.
         if reply is not self._reply:
             return
         size = reply.header(QNetworkRequest.KnownHeaders.ContentLengthHeader)
@@ -212,6 +228,8 @@ class AvatarLoader(QObject):
             self._reject(reply)
 
     def _finished(self, reply):
+        # 只有有效的成功回應才解碼／快取；任何失敗都只回傳替代圖訊號。
+        # Decode/cache valid successful responses only; failures signal the placeholder instead.
         if reply is not self._reply:
             return
         if reply.error() != QNetworkReply.NetworkError.NoError:
@@ -246,6 +264,8 @@ class AvatarLoader(QObject):
             self._reject(self._reply)
 
     def cancel(self):
+        # 先清除身分再 abort：即使 abort 同步觸發 finished，也不會更新舊頭像。
+        # Clear identity before abort, since abort may emit finished synchronously.
         reply, self._reply = self._reply, None
         self._timer.stop()
         self._data.clear()

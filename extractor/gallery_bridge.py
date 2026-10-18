@@ -348,10 +348,14 @@ def main(argv=None) -> int:
         if args.conversation:
             validate_thread_url(args.url)
         if args.smoke_test:
+            # 版本只在獨立解析器查詢，GUI 不匯入 gallery-dl 的程式碼。
+            # Read the installed version here without importing gallery-dl into the GUI.
+            from importlib.metadata import version
             names = [type(get_extractor(url)).__name__ for url in (
                 "https://x.com/search?q=%23sampleart&f=live", "https://x.com/artist/media", "https://x.com/artist/status/123",
             )]
-            _emit({"type": "done", "ok": True, "count": 0, "extractors": names})
+            _emit({"type": "done", "ok": True, "count": 0, "extractors": names,
+                   "version": version("gallery-dl")})
             return 0
         if not args.url or args.cookies is None:
             raise ValueError("missing URL or cookie path")

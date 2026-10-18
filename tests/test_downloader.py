@@ -1,6 +1,7 @@
 from datetime import date, datetime, timezone
 from io import BytesIO
 from pathlib import Path
+import os
 import sys
 import tempfile
 import threading
@@ -128,7 +129,16 @@ class EngineTests(unittest.TestCase):
         self.logs = []
 
     def tearDown(self):
-        self.temp.cleanup()
+        # Windows 掃描器可能短暫保留已刪除項目；只對「目錄非空」做有限重試。
+        # Retry only transient Windows delete-pending directories; never ignore persistent cleanup failures.
+        for delay in (0.05, 0.1, 0.2, 0.4, 0):
+            try:
+                self.temp.cleanup()
+                break
+            except OSError as error:
+                if os.name != "nt" or getattr(error, "winerror", None) != 145 or not delay:
+                    raise
+                time.sleep(delay)
 
     def options(self, **kwargs):
         values = dict(hashtag="#noonle", output_dir=self.root / "downloads", database_path=self.root / "state.sqlite3",
@@ -169,7 +179,7 @@ class EngineTests(unittest.TestCase):
                         return response
                 session = RedirectSession()
                 with patch('downloader.threading.Event.wait', return_value=False):
-                    result = self.run_engine(Source([media()]), session)
+                    result = self.run_engine(Source([media()]), session, resume=False)
                 self.assertEqual(result.downloaded, 0)
                 self.assertTrue(session.urls)
                 self.assertTrue(all(url == media()[0] for url in session.urls))
@@ -207,7 +217,7 @@ class EngineTests(unittest.TestCase):
 
     def test_each_unique_target_has_a_separate_latest_search(self):
         source = Source([])
-        self.run_engine(source, hashtags=("#NOONLE", "#second", "SECOND"), since=date(2026, 10, 16))
+        self.run_engine(source, hashtags=("#NOONLE", "#second", "SECOND"), since=date(2026, 10, 16), date_window_search=False)
         self.assertEqual(len(source.urls), 2)
         searches = [parse_qs(urlsplit(url).query) for url in source.urls]
         self.assertEqual([query["q"][0] for query in searches],
@@ -799,7 +809,7 @@ class ThreadEngineTests(unittest.TestCase):
                     event.set()
                     raise GallerySourceError("network")
                 source = ThreadSource([root], failed) if stage == "thread" else Source(failed)
-                result = DownloadEngine(self.options(), source=source, session=Session(),
+                result = DownloadEngine(self.options(resume=False), source=source, session=Session(),
                     log=self.logs.append, stop_event=event).run()
                 self.assertTrue(result.stopped)
                 self.assertEqual(result.errors, [])

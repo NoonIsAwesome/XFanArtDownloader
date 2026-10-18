@@ -14,7 +14,7 @@ import re
 from PyQt6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, QUrl
 from PyQt6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QProxyStyle, QPushButton,
+    QApplication, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QMenu, QProxyStyle, QPushButton,
     QScrollArea, QSizePolicy, QStyle, QStyleOptionButton, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 from ui_theme import apply_dialog_theme, apply_palette, gallery_stylesheet, theme_colors, ui_font
 from i18n import tr, language_mode
 from resources_rc import get_icon_path
+from app_version import APP_VERSION
 
 
 TEAL = "#176C68"
@@ -30,6 +31,8 @@ MUTED = "#586971"
 
 
 class WrappingCheckBox(QCheckBox):
+    # 保留原生勾選與鍵盤操作，但讓較長的翻譯文字能隨欄寬換行。
+    # Keep native checkbox and keyboard behavior while wrapping longer translations to the available width.
     """Preserve native checkbox behavior while letting long translations wrap."""
 
     def __init__(self, text="", parent=None):
@@ -82,6 +85,8 @@ class HeaderHelpLabel(QLabel):
 
 
 class ElidedLabel(QLabel):
+    # 作者名稱／檔名一律當純文字；畫面放不下時省略，滑鼠提示保留完整內容。
+    # Display names and filenames as plain text; elide long labels and retain the full text in a tooltip.
     """One-line public names/filenames; retain literal full text for accessibility."""
 
     def __init__(self, parent=None):
@@ -113,6 +118,8 @@ class ElidedLabel(QLabel):
 
 
 class PreviewLabel(QLabel):
+    # 這裡只縮放已解碼的 QImage；檔案讀取與解碼由 media_preview.py 背景處理。
+    # Scale an already decoded QImage here; media_preview.py handles file reads and decoding in the background.
     def __init__(self):
         super().__init__()
         self._image = None
@@ -141,6 +148,8 @@ class PreviewLabel(QLabel):
 
 
 class GalleryControlStyle(QProxyStyle):
+    # 僅自繪勾選記號，其餘狀態與操作仍交由 Qt；避免整個控制項重造後失去無障礙支援。
+    # Customize only the check mark and preserve native Qt interaction and accessibility.
     """Keep real Qt checkbox behavior while drawing a clear teal check mark."""
 
     def pixelMetric(self, metric, option=None, widget=None):
@@ -226,6 +235,11 @@ def line_icon(name: str, size: int = 20, color: str = TEAL) -> QIcon:
         painter.drawLine(QPointF(4, 16), QPointF(4, 21))
         painter.drawLine(QPointF(4, 21), QPointF(20, 21))
         painter.drawLine(QPointF(20, 21), QPointF(20, 16))
+    elif name == "more":
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(color))
+        for x in (5, 12, 19):
+            painter.drawEllipse(QPointF(x, 12), 1.5, 1.5)
     elif name == "stop":
         painter.drawRoundedRect(QRectF(6, 6, 12, 12), 1.5, 1.5)
     elif name == "video":
@@ -310,6 +324,8 @@ def _rule() -> QFrame:
 
 
 def apply_gallery_theme(window, mode=None):
+    # 先統一 palette，再套用樣式與圖示；獨立對話框也需要相同的深淺色基準。
+    # Apply a consistent palette before styles and icons, including separate dialog windows.
     mode = mode if mode in ("light", "dark") else getattr(window, "theme_mode", "light")
     window.theme_mode = mode
     colors = theme_colors(mode)
@@ -331,7 +347,7 @@ def apply_gallery_theme(window, mode=None):
         ("cookie_import_btn", "folder", "accent"),
         ("choose_path_btn", "folder", "accent"), ("download_btn", "download", "accent_ink"),
         ("stop_btn", "stop", "muted"), ("about_btn", "info", "accent"),
-        ("help_btn", "info", "accent"),
+        ("help_btn", "info", "accent"), ("tools_btn", "more", "accent"),
     ):
         if hasattr(window, attr):
             getattr(window, attr).setIcon(line_icon(name, color=colors[color]))
@@ -371,7 +387,16 @@ def set_window_theme(window, mode):
 
 
 def refresh_gallery_summary(window):
+    # 摘要只讀取目前選項並產生說明，實際任務設定仍由 main.snapshot_options 驗證。
+    # The summary describes current inputs; main.snapshot_options still validates the actual job.
     """Update summaries without raising while the user is editing a tag."""
+    if window.is_downloading and getattr(window, "_active_retry_count", 0):
+        window.tag_summary_label.setText(tr("選取媒體重試"))
+        window.tag_summary_label.setToolTip(window.tag_summary_label.text())
+        window.source_summary_label.setText(tr("僅重試選取的 {count} 個媒體", count=window._active_retry_count))
+        window.path_label.setText(str(window.download_path))
+        window.path_label.setToolTip(str(window.download_path))
+        return
     text = window.hashtag_input.text().strip()
     try:
         from downloader import parse_hashtags
@@ -404,15 +429,28 @@ def refresh_gallery_summary(window):
 def build_gallery_layout(window):
     """Build approved split workbench A using all controller-owned widgets."""
     apply_gallery_theme(window)
+    # 自訂樣式同時有 C++ 物件與 Python 子類別：兩者都必須活得比使用它的元件久。
+    # Both the native style and its Python subclass must outlive every widget borrowing the style.
     window._gallery_control_style = GalleryControlStyle("Fusion")
-    window._gallery_control_style.setParent(window)
-    window.setWindowTitle("FanArt Downloader")
+    # QWidget.setStyle() borrows its style. Under a stylesheet Qt also wraps
+    # that borrowed base style, so it must survive every borrowing widget.
+    # A window parent would delete it before the window's later-added controls.
+    application = QApplication.instance()
+    window._gallery_control_style.setParent(application)
+    # Retain the Python subclass too: Qt can call its virtual painting methods
+    # until QApplication has finished releasing all of its widgets.
+    if not hasattr(application, "_fanart_control_styles"):
+        application._fanart_control_styles = []
+    application._fanart_control_styles.append(window._gallery_control_style)
+    window.setWindowTitle(f"FanArt Downloader {APP_VERSION}")
     window.setMinimumSize(1020, 740)
     window.resize(1160, 860)
     root = QVBoxLayout(window)
     root.setContentsMargins(26, 22, 26, 22)
     root.setSpacing(20)
 
+    # 頂列：品牌、語言／主題／說明，以及登入操作；和下方收集表單分開管理。
+    # Keep branding, language, theme, help and login controls separate from the collection form.
     header = QHBoxLayout()
     header.setSpacing(14)
     brand_mark = QLabel()
@@ -446,6 +484,8 @@ def build_gallery_layout(window):
     window.about_btn = QPushButton(tr('作者資訊'))
     window.help_btn = QPushButton(tr('使用說明'))
     window.help_btn.setAccessibleName(tr('開啟使用說明與登入引導'))
+    # 語言欄有固定可見標籤，避免只看「跟隨電腦設定」時不清楚用途。
+    # A persistent language label explains the control even when the selected value is Follow system.
     utilities = QHBoxLayout()
     utilities.setSpacing(9)
     utilities.addStretch(1)
@@ -469,10 +509,21 @@ def build_gallery_layout(window):
     utilities.addWidget(window.theme_btn)
     utilities.addWidget(window.help_btn)
     utilities.addWidget(window.about_btn)
+    # 次要功能收進單一工具選單，避免多語系文字把頂列擠出視窗。
+    # Group secondary actions in one tools menu to keep translated headers within the window.
+    window.tools_btn = QPushButton(tr("更多功能"))
+    window.tools_btn.setIcon(line_icon("more", color=TEAL))
+    window.tools_menu = QMenu(window.tools_btn)
+    window.history_action = window.tools_menu.addAction(tr("下載紀錄與收集進度"))
+    window.update_action = window.tools_menu.addAction(tr("檢查 App 與擷取工具更新"))
+    window.tools_menu.addSeparator()
+    window.clear_login_action = window.tools_menu.addAction(tr("清除本機登入資料"))
+    window.tools_btn.setMenu(window.tools_menu)
     auth.addLayout(utilities)
     auth_buttons.addWidget(window.cookie_btn)
     auth_buttons.addWidget(window.cookie_save_btn)
     auth_buttons.addWidget(window.cookie_import_btn)
+    auth_buttons.addWidget(window.tools_btn)
     auth.addLayout(auth_buttons)
     window.login_state_label = _label("尚未儲存登入資料", "muted")
     window.login_state_label.setAlignment(Qt.AlignmentFlag.AlignRight)
@@ -495,6 +546,8 @@ def build_gallery_layout(window):
     root.addLayout(header)
     root.addWidget(_rule())
 
+    # 主區域採雙欄；左邊輸入來源，右邊保留本次狀態、紀錄與操作按鈕。
+    # Use the left column for sources and the right column for progress, logs and job actions.
     body = QHBoxLayout()
     body.setSpacing(24)
     window.collection_scroll = QScrollArea()
@@ -506,6 +559,8 @@ def build_gallery_layout(window):
     form.setContentsMargins(0, 0, 8, 4)
     form.setSpacing(14)
     form.addWidget(_label("收集 FanArt", "title"))
+    # 標籤是所有原貼文的共通篩選條件，多個標籤採任一完整匹配。
+    # Every original post must match at least one complete requested tag.
     tags = QVBoxLayout()
     tags.setSpacing(7)
     tag_label = _label("目標標籤", "field")
@@ -529,6 +584,8 @@ def build_gallery_layout(window):
     search_row.addWidget(_label("搜尋含指定標籤的貼文。", "muted", wrap=True), 1)
     form.addWidget(search)
 
+    # 作者補抓分成自動發現與手動補充，手動帳號只是選填，不是開始前的必要條件。
+    # Separate automatically discovered authors from optional manual additions; a manual handle is not required.
     authors = QFrame()
     authors.setObjectName("authorSurface")
     author_layout = QVBoxLayout(authors)
@@ -555,6 +612,8 @@ def build_gallery_layout(window):
     author_layout.addWidget(window.authors_input)
     form.addWidget(authors)
 
+    # 貼網址下載是獨立入口；仍使用同一套後端篩選、命名與下載紀錄。
+    # Direct post URLs share the same backend filtering, naming and download history.
     urls = QVBoxLayout()
     urls.setSpacing(6)
     url_label = _label("貼文網址（選填）", "field")
@@ -589,6 +648,8 @@ def build_gallery_layout(window):
     divider.setFixedWidth(1)
     divider.setObjectName("galleryRule")
     body.addWidget(divider)
+    # 右欄內容可捲動，進階選項和開始／停止按鈕另外保留位置。
+    # Let sidebar content scroll while keeping advanced options and job actions in their own space.
     right = QWidget()
     right.setMinimumWidth(390)
     right_layout = QVBoxLayout(right)
@@ -646,6 +707,8 @@ def build_gallery_layout(window):
     sidebar.addWidget(_rule())
     sidebar.addWidget(_label("下載紀錄", "field"))
     window.current_media_row = QWidget()
+    # 公開頭像與作者文字只顯示當前下載項目，不會使用登入 Cookie 去抓頭像。
+    # Show the current author using a public avatar request without login cookies.
     current_row = QHBoxLayout(window.current_media_row)
     current_row.setContentsMargins(0, 0, 0, 0)
     current_row.setSpacing(10)
@@ -665,6 +728,8 @@ def build_gallery_layout(window):
     window.current_media_row.hide()
     sidebar.addWidget(window.current_media_row)
     window.current_preview_container = QWidget()
+    # 最近下載預覽只接收已提交的本機圖片；影片使用提示圖示，避免額外自動播放。
+    # Preview committed local images only; use a placeholder instead of automatically playing videos.
     preview_layout = QVBoxLayout(window.current_preview_container)
     preview_layout.setContentsMargins(0, 0, 0, 0)
     preview_layout.setSpacing(5)
@@ -680,6 +745,8 @@ def build_gallery_layout(window):
     preview_layout.addWidget(window.current_preview_label)
     window.current_preview_container.hide()
     sidebar.addWidget(window.current_preview_container)
+    # 空白狀態與實際紀錄共用位置，首次開啟時也能看懂下一步要做什麼。
+    # Share the same area for the empty-state guidance and the active download log.
     log = QWidget()
     log_layout = QGridLayout(log)
     log_layout.setContentsMargins(0, 0, 0, 0)
@@ -723,6 +790,8 @@ def build_gallery_layout(window):
     window.advanced_panel.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     window.advanced_panel.setMinimumHeight(145)
     window.advanced_panel.setMaximumHeight(245)
+    # 進階功能集中折疊；搜尋上限僅限制搜尋階段，作者與同串補抓仍會繼續。
+    # Group advanced controls; the search quota does not stop author or same-thread backfill.
     advanced = QWidget()
     advanced_layout = QVBoxLayout(advanced)
     advanced_layout.setContentsMargins(0, 2, 7, 6)
@@ -742,6 +811,12 @@ def build_gallery_layout(window):
     window.limit_date_input.setFixedWidth(168)
     date_row.addWidget(window.limit_date_input)
     advanced_layout.addLayout(date_row)
+    advanced_layout.addWidget(window.date_window_search_checkbox)
+    advanced_layout.addWidget(window.resume_checkbox)
+    advanced_layout.addWidget(_label(
+        "分段搜尋需設定起始日期；接續工作會略過已完成來源，未完成段落可能重新掃描。",
+        "muted", wrap=True,
+    ))
     advanced_layout.addWidget(window.human_behavior_checkbox)
     advanced_layout.addWidget(window.retry_failed_checkbox)
     advanced_layout.addWidget(_rule())
@@ -758,6 +833,8 @@ def build_gallery_layout(window):
         "muted", wrap=True,
     ))
     advanced_layout.addWidget(window.warp_proxy_checkbox)
+    # WARP 是選用的本機 SOCKS5 端點；這個畫面不負責開啟 VPN 或修改系統網路。
+    # WARP is an optional local SOCKS5 endpoint; this view never enables a VPN or changes system networking.
     proxy_row = QHBoxLayout()
     proxy_label = _label("本機代理連接埠")
     proxy_label.setBuddy(window.warp_proxy_port_input)
@@ -784,6 +861,8 @@ def build_gallery_layout(window):
 
     window.advanced_toggle.toggled.connect(toggle_advanced)
     right_layout.addWidget(window.advanced_panel)
+    # 操作按鈕固定在捲動內容之外，下載中仍能直接停止。
+    # Keep job actions outside the scrolling content so Stop remains directly accessible.
     actions = QHBoxLayout()
     actions.setSpacing(10)
     window.download_btn.setText(tr('開始收集'))
@@ -824,7 +903,7 @@ def build_gallery_layout(window):
     window.authors_input.setTabChangesFocus(True)
     window.tweet_urls_input.setTabChangesFocus(True)
     sequence = (
-        window.language_combo, window.theme_btn, window.help_btn, window.about_btn, window.cookie_btn, window.cookie_save_btn, window.cookie_import_btn,
+        window.language_combo, window.theme_btn, window.help_btn, window.about_btn, window.cookie_btn, window.cookie_save_btn, window.cookie_import_btn, window.tools_btn,
         window.hashtag_input,
         window.search_checkbox, window.author_media_checkbox,
         window.discover_authors_checkbox, window.authors_input,
@@ -832,6 +911,7 @@ def build_gallery_layout(window):
         window.advanced_toggle, window.folder_by_user_checkbox,
         window.limit_count_checkbox, window.limit_count_input,
         window.limit_date_checkbox, window.limit_date_input,
+        window.date_window_search_checkbox, window.resume_checkbox,
         window.human_behavior_checkbox, window.retry_failed_checkbox,
         window.reply_media_checkbox,
         window.warp_proxy_checkbox, window.warp_proxy_port_input,

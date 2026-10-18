@@ -10,8 +10,12 @@ from PyQt6.QtWidgets import QAbstractButton, QApplication
 
 
 class ButtonFocusVisibility(QObject):
+    # 只控制「是否畫出外框」，保留 Qt 原生焦點、Tab 順序與鍵盤啟動行為。
+    # Change only the visual ring while preserving native focus, Tab order and keyboard activation.
     def __init__(self, application):
         super().__init__(application)
+        # 重要：不能再反向保存 application，否則會形成循環並延後 Qt 的釋放。
+        # Never retain the application back from its owned filter; that cycle delays native Qt teardown.
         # QApplication owns this filter. Do not retain the application back:
         # that Python cycle delays native Qt teardown until interpreter exit,
         # when SIP virtual callbacks may no longer be safe.
@@ -31,6 +35,8 @@ class ButtonFocusVisibility(QObject):
         widget.update()
 
     def eventFilter(self, watched, event):
+        # 依最近的輸入方式區分滑鼠與鍵盤；關閉說明視窗後也能沿用正確的外觀。
+        # Track the last input method so returning from a dialog restores the correct mouse or keyboard appearance.
         kind = event.type()
         if kind == QEvent.Type.MouseButtonPress:
             self.keyboard_navigation = False
@@ -53,6 +59,8 @@ class ButtonFocusVisibility(QObject):
 
 def install_button_focus_visibility():
     """Install once per QApplication, including independently opened dialogs."""
+    # 安裝在應用程式層級，讓主視窗與對話框共用一套規則，且只安裝一次。
+    # Install once at application scope so the main window and dialogs share the same focus rules.
     application = QApplication.instance()
     if application is None:
         return None

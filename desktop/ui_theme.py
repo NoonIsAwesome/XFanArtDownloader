@@ -8,6 +8,8 @@ from focus_visibility import install_button_focus_visibility
 
 def ui_font() -> QFont:
     """Use installed native fonts for the chosen writing system, with fallbacks."""
+    # 先選符合介面語言的系統字型，再提供跨語系備援，避免中日韓文字缺字。
+    # Prefer a native font for the selected language, with CJK-capable fallbacks.
     preferred = {
         "zh_TW": "Microsoft JhengHei UI", "zh_CN": "Microsoft YaHei UI",
         "ja": "Yu Gothic UI", "ko": "Malgun Gothic", "en": "Segoe UI",
@@ -18,6 +20,8 @@ def ui_font() -> QFont:
     return font
 
 
+# 顏色以用途命名，讓主視窗、日曆與對話框共用明暗狀態，而非各自猜測系統配色。
+# Semantic colors keep the main window, calendar, and dialogs on the same explicit theme.
 PALETTES = {
     "light": {
         "window": "#FFFFFF", "surface": "#F3F6F7", "input": "#FFFFFF",
@@ -45,10 +49,14 @@ PALETTES = {
 
 
 def theme_colors(theme: str = "light") -> dict[str, str]:
+    # 回傳副本，避免單一元件修改顏色時影響所有其他視窗。
+    # Return a copy so a widget cannot mutate every other window's shared colors.
     return dict(PALETTES.get(theme, PALETTES["light"]))
 
 
 def apply_palette(widget, theme: str):
+    # 原生 Qt 元件也需要明確的 palette；僅設定樣式表可能混入作業系統的底色。
+    # Native Qt widgets need explicit palettes too; stylesheets alone can retain OS colors.
     install_button_focus_visibility()
     c = theme_colors(theme)
     palette = QPalette()
@@ -67,6 +75,8 @@ def apply_palette(widget, theme: str):
     for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive, QPalette.ColorGroup.Disabled):
         for role, key in roles.items():
             palette.setColor(group, role, QColor(c[key]))
+    # 停用狀態另行覆蓋，讓不可操作的欄位仍保有一致且可辨識的文字。
+    # Override disabled roles separately so unavailable fields remain consistently readable.
     for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText):
         palette.setColor(QPalette.ColorGroup.Disabled, role, QColor(c["disabled_fg"]))
     palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base, QColor(c["disabled_bg"]))
@@ -76,6 +86,8 @@ def apply_palette(widget, theme: str):
 
 
 def common_stylesheet(theme: str) -> str:
+    # 共用輸入、按鈕、捲軸與焦點規則；鍵盤焦點由控制器標記，滑鼠不留下外框。
+    # Share input/button/scrollbar rules; the controller distinguishes keyboard focus from clicks.
     c = theme_colors(theme)
     return f"""
         QLabel, QLineEdit, QTextEdit, QDateEdit, QCheckBox, QPushButton, QToolButton,
@@ -108,6 +120,7 @@ def common_stylesheet(theme: str) -> str:
             border-radius: 7px; padding: 8px 14px; min-height: 20px; font-size: 14px; }}
         QPushButton:hover {{ background: {c['hover']}; border-color: {c['accent']}; }}
         QPushButton:pressed {{ background: {c['pressed']}; }}
+        QPushButton::menu-indicator {{ image: none; width: 0px; height: 0px; }}
         QPushButton[keyboardFocus="true"]:focus {{ border: 2px solid {c['accent']}; padding: 7px 13px; }}
         QPushButton[variant="primary"] {{ background: {c['accent']}; border-color: {c['accent']};
             color: {c['accent_ink']}; font-weight: 600; }}
@@ -122,11 +135,19 @@ def common_stylesheet(theme: str) -> str:
         QScrollBar::handle:vertical:hover {{ background: {c['accent']}; }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
         QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+        QMenu {{ background: {c['input']}; color: {c['ink']}; border: 1px solid {c['border']};
+            border-radius: 7px; padding: 4px; font-size: 14px; }}
+        QMenu::item {{ padding: 8px 14px; border: 1px solid transparent; border-radius: 4px; }}
+        QMenu::item:selected {{ background: {c['accent_soft']}; color: {c['accent_soft_ink']}; }}
+        QMenu::item:disabled {{ color: {c['disabled_fg']}; }}
+        QMenu::separator {{ height: 1px; background: {c['divider']}; margin: 6px 8px; }}
         QToolTip {{ background: {c['surface']}; color: {c['ink']}; border: 1px solid {c['border']}; padding: 6px; }}
     """
 
 
 def gallery_stylesheet(theme: str) -> str:
+    # 主頁才使用的面板、標籤與下載紀錄樣式，建立在同一份共用規則上。
+    # Main-page panels, tags, and download logs build on the common widget rules.
     c = theme_colors(theme)
     return common_stylesheet(theme) + f"""
         QWidget#galleryWindow {{ background: {c['window']}; color: {c['ink']}; }}
@@ -149,6 +170,8 @@ def gallery_stylesheet(theme: str) -> str:
 
 
 def apply_dialog_theme(dialog, theme: str = "light"):
+    # 每個對話框明確套用字型、palette 與樣式，不依賴開啟當下的系統深淺設定。
+    # Set each dialog's font, palette, and styles explicitly instead of inheriting the OS theme.
     c = theme_colors(theme)
     dialog.setObjectName("galleryDialog")
     dialog.setFont(ui_font())

@@ -150,7 +150,7 @@ class StoreTests(unittest.TestCase):
         with Store(legacy) as migrated:
             post = migrated.post_state("123")
             self.assertEqual((post["text"], post["hashtags"], post["context"]), ("original", ["fanart"], {}))
-            self.assertEqual(migrated._db.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(migrated._db.execute("PRAGMA user_version").fetchone()[0], 3)
             context = {"post_id": "124", "author": "alice", "reply_id": "123"}
             migrated.record_post("124", "alice", "reply", [], "thread", False, context=context)
             migrated.record_thread_context("123", context)

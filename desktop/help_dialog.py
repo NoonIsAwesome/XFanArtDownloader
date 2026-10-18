@@ -13,6 +13,8 @@ from ui_theme import apply_dialog_theme, theme_colors
 from i18n import tr, locale as ui_locale
 
 
+# 操作說明集中保存繁中原文，作為翻譯查找的穩定來源；開啟說明不會連網。
+# Keep Traditional Chinese source copy as stable translation keys; opening help is offline.
 STEPS = (
     (
         "填入想收集的標籤",
@@ -66,6 +68,18 @@ PREVIEW_HELP = (
     "紀錄中的 🖼️／🎬 分別表示圖片與影片。啟用作者資料夾時，簡短路徑顯示「作者帳號\\檔名」；"
     "關閉時只顯示檔名。"
 )
+RESUME_HELP = (
+    "設定起始日期並勾選分段搜尋，會以 30 天為一段查詢，仍遵守搜尋上限。\n"
+    "相同設定可接續未完成工作；已完成來源會略過，未完成段落可能重新掃描，已下載媒體不會重複下載。"
+    "接續時，此工作已看過的搜尋貼文不重占本輪配額。\n"
+    "未完成工作沿用原先排程的日期範圍；若要立即查詢新日期，可取消「接續未完成的收集工作」開始新工作。"
+)
+TOOLS_HELP = (
+    "「更多功能 → 下載紀錄與收集進度」可篩選下載結果、開啟檔案，以及只重試選取的失敗項目；"
+    "收集進度分頁會列出尚未完成的來源。\n"
+    "「清除本機登入資料」需再次確認，只移除本工具的 Cookie 與專用瀏覽器資料，保留下載與紀錄。"
+    "「檢查 App 與擷取工具更新」只查詢官方版本資訊，不會自動下載或安裝。"
+)
 CONNECTION_HELP = (
     "X 載入或下載較慢時，可選用 WARP 本機代理；一般連線正常時不需要開啟。\n"
     "若只想讓本工具的下載經 WARP，請先自行安裝官方 WARP，於 Preferences → Advanced → "
@@ -88,6 +102,8 @@ class UsageGuideDialog(QDialog):
         super().__init__(parent)
         self.theme_mode = "dark" if theme == "dark" else "light"
         self.setObjectName("usageGuideDialog")
+        # 由本視窗自行重譯各段，避免通用元件樹覆蓋原文或重建閱讀位置。
+        # Retranslate this dialog locally, preserving source keys and reading position.
         self.setProperty("i18nSkip", True)
         self.setWindowTitle(tr("FanArt Downloader 使用說明"))
         self.setAccessibleName(tr("FanArt Downloader 四步使用說明"))
@@ -122,6 +138,8 @@ class UsageGuideDialog(QDialog):
         )
         layout.addWidget(self.introduction_label)
 
+        # 長篇步驟放在可捲動區，標題與底部關閉按鈕維持可見。
+        # Scroll the long instructions while keeping the title and Close action visible.
         self.scroll_area = QScrollArea()
         self.scroll_area.setObjectName("usageGuideScroll")
         self.scroll_area.setAccessibleName(tr("四步操作與登入資料說明"))
@@ -167,6 +185,8 @@ class UsageGuideDialog(QDialog):
             row.addLayout(section, 1)
             body.addLayout(row)
 
+        # 將同串例外、搜尋配額與預覽分開說明，避免被誤認為全面放寬標籤。
+        # Explain thread exceptions, search quotas, and previews separately from tag matching.
         thread_help = QVBoxLayout()
         thread_help.setSpacing(6)
         self.thread_title = self._label("原作者留言補抓", "usageGuideThreadTitle", "stepTitle")
@@ -191,6 +211,20 @@ class UsageGuideDialog(QDialog):
         preview_help.addWidget(self.preview_label)
         body.addLayout(preview_help)
 
+        # 將續抓限制與管理入口寫進內建說明，第一次使用也不必另找 README。
+        # Explain resume boundaries and management tools in the first-run guide as well as the README.
+        for title, text, name in (
+            ("分段搜尋與接續工作", RESUME_HELP, "Resume"),
+            ("紀錄、登入資料與更新", TOOLS_HELP, "Tools"),
+        ):
+            section = QVBoxLayout()
+            section.setSpacing(6)
+            section.addWidget(self._label(title, f"usageGuide{name}Title", "stepTitle"))
+            section.addWidget(self._label(text, f"usageGuide{name}Body", "body"))
+            body.addLayout(section)
+
+        # 連線說明是本機文字；只有使用者點按官方連結時才開啟瀏覽器。
+        # Network guidance is local text; only an explicit link click opens a browser.
         connection = QVBoxLayout()
         connection.setSpacing(6)
         self.connection_title = self._label("連線較慢時", "usageGuideConnectionTitle", "stepTitle")
@@ -240,6 +274,8 @@ class UsageGuideDialog(QDialog):
         label = QLabel(tr(text))
         label.setObjectName(name)
         label.setProperty("guideRole", role)
+        # 即使目前顯示其他語言，也能從同一份原文重新翻譯。
+        # Keep the original translation key even when another language is displayed.
         label.setProperty("guideSource", text)
         label.setTextFormat(Qt.TextFormat.PlainText)
         label.setWordWrap(True)
@@ -249,6 +285,8 @@ class UsageGuideDialog(QDialog):
 
     def retranslate_ui(self) -> None:
         """Update this instance without resetting its theme or reading position."""
+        # 先記錄捲動位置，待新文字排版完成後恢復，保留閱讀進度。
+        # Restore the reading position after translated text has been laid out.
         position = self.scroll_area.verticalScrollBar().value()
         self.setLocale(ui_locale())
         self.setWindowTitle(tr("FanArt Downloader 使用說明"))
@@ -266,10 +304,14 @@ class UsageGuideDialog(QDialog):
         self.scroll_area.verticalScrollBar().setValue(position)
 
     def _open_connection_help(self, url: str) -> None:
+        # 外部連結只接受程式內固定的官方網址，不從顯示文字推導目標。
+        # Accept only the fixed official URL, never a target inferred from displayed text.
         if url == CONNECTION_HELP_URL:
             QDesktopServices.openUrl(QUrl(url))
 
     def set_theme(self, theme: str) -> None:
+        # 只替換配色與圖示，不重建元件、訊號或說明內容。
+        # Change colors/icons without rebuilding widgets, connections, or help content.
         self.theme_mode = "dark" if theme == "dark" else "light"
         apply_dialog_theme(self, self.theme_mode)
         self.setObjectName("usageGuideDialog")
