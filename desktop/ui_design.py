@@ -214,8 +214,8 @@ def line_icon(name: str, size: int = 20, color: str = TEAL) -> QIcon:
         path.closeSubpath()
         painter.drawPath(path)
         if name == "folder-open":
-            # 展開的前蓋讓「開啟」與「選擇位置」具有不同的圖示。
-            # An open front flap distinguishes opening a folder from choosing its location.
+            # 以展開的前蓋表示「開啟資料夾」。
+            # An open front flap represents opening the folder.
             front = QPainterPath(QPointF(3, 10))
             front.lineTo(22, 10)
             front.lineTo(19, 19)
@@ -246,7 +246,7 @@ def line_icon(name: str, size: int = 20, color: str = TEAL) -> QIcon:
         painter.drawLine(QPointF(4, 16), QPointF(4, 21))
         painter.drawLine(QPointF(4, 21), QPointF(20, 21))
         painter.drawLine(QPointF(20, 21), QPointF(20, 16))
-    elif name == "more":
+    elif name in ("more", "browse"):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(color))
         for x in (5, 12, 19):
@@ -358,7 +358,7 @@ def apply_gallery_theme(window, mode=None):
     for attr, name, color in (
         ("cookie_btn", "login", "accent_ink"), ("cookie_save_btn", "save", "accent"),
         ("cookie_import_btn", "folder", "accent"),
-        ("choose_path_btn", "folder", "accent"), ("download_btn", "download", "accent_ink"),
+        ("choose_path_btn", "browse", "accent"), ("download_btn", "download", "accent_ink"),
         ("open_download_folder_btn", "folder-open", "accent"),
         ("stop_btn", "stop", "muted"), ("tools_btn", "more", "accent"),
         ("about_action", "info", "accent"), ("help_action", "info", "accent"),
@@ -743,7 +743,9 @@ def build_gallery_layout(window):
     destination_row.addWidget(path_surface, 1)
     window.choose_path_btn.setProperty("role", "destinationAction")
     window.choose_path_btn.setText("")
-    window.choose_path_btn.setIcon(line_icon("folder"))
+    # 三點是瀏覽位置的慣用符號，與右側的開啟資料夾圖示保持明顯區別。
+    # Use the conventional browse ellipsis so choosing a location differs clearly from opening it.
+    window.choose_path_btn.setIcon(line_icon("browse"))
     window.choose_path_btn.setAccessibleName(tr('選擇下載資料夾'))
     window.choose_path_btn.setToolTip(tr('選擇下載資料夾'))
     window.choose_path_btn.setFixedSize(42, 42)

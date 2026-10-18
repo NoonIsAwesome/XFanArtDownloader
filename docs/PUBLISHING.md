@@ -20,9 +20,9 @@ Bind the Custom Domain `downloads.noonisawesome.dev` through the Cloudflare dash
 
 ## 四資產發布 / Four-asset release
 
-將以下四檔放入同一資料夾：`XFanArtDownloader.exe`、`SHA256SUMS.txt`、`LICENSE`、`THIRD_PARTY_NOTICES.txt`。checksum manifest 至少包含 EXE 的 SHA256；若列出其他資產也必須相符。此工具固定發布 `fanart-downloader/3.0.0.0/builds/423cc567f1f20762/`，並鎖定已驗證 EXE SHA256 `423cc567f1f2076261684b58b52b590667bee5a64bea01fc0612f7beb88e7083`。未來版本須先更新工具中的明確版本、檔案及 hash，再重新審查。
+將以下四檔放入同一資料夾：`XFanArtDownloader.exe`、`SHA256SUMS.txt`、`LICENSE`、`THIRD_PARTY_NOTICES.txt`。checksum manifest 至少包含 EXE 的 SHA256；若列出其他資產也必須相符。此工具固定發布 `fanart-downloader/3.0.0.0/builds/0e20c39a0a97946d/`，並鎖定已驗證 EXE SHA256 `0e20c39a0a97946ded4a118932b402be41c76ac87f8fda21bd74cb0918ec9d65`。未來版本須先更新工具中的明確版本、檔案及 hash，再重新審查。
 
-Place those four files together. `SHA256SUMS.txt` must identify the EXE; any other listed asset must also match. The tool pins the `fanart-downloader/3.0.0.0/builds/423cc567f1f20762/` prefix and the verified EXE digest above. Future releases require an explicit version/hash update and review.
+Place those four files together. `SHA256SUMS.txt` must identify the EXE; any other listed asset must also match. The tool pins the `fanart-downloader/3.0.0.0/builds/0e20c39a0a97946d/` prefix and the verified EXE digest above. Future releases require an explicit version/hash update and review.
 
 同一版號在正式公開前重新建置時，使用 `builds/<EXE SHA256 前 16 碼>/` 子目錄，並同步更新網站載點，避免一年 immutable 快取提供舊檔。舊物件保留；本機 EXE 及 GitHub Release 可更新為已驗證的新檔。
 
