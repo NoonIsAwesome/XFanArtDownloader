@@ -327,8 +327,10 @@ class TwitterDownloader(QWidget):
         # Advanced options apply to this job; WARP starts disabled and never changes system DNS or VPN settings.
         self.retry_failed_checkbox = WrappingCheckBox(tr('重試先前失敗的下載'))
         self.retry_failed_checkbox.setChecked(True)
-        self.reply_media_checkbox = WrappingCheckBox(tr("補抓原作者在同一討論串的圖片與影片"))
-        self.reply_media_checkbox.setChecked(True)
+        # 留言查詢是較慢的額外工作，必須由使用者主動開啟。
+        # Reply queries are additional, slower work and require an explicit opt-in.
+        self.reply_media_checkbox = WrappingCheckBox(tr("補抓原作者在同一討論串的圖片與影片（會多花一些時間載入）"))
+        self.reply_media_checkbox.setChecked(False)
         self.auto_driver_checkbox = WrappingCheckBox(tr('啟動時自動檢查 ChromeDriver'))
         self.auto_driver_checkbox.setChecked(True)
         self.auto_driver_checkbox.setToolTip(tr('新版下載不需要此驅動；此功能保留舊版驅動的更新能力。'))
@@ -1206,6 +1208,11 @@ class TwitterDownloader(QWidget):
                 if isinstance(settings.get(key), str):
                     widget.setPlainText(settings[key])
             for key, widget in self._checkbox_settings().items():
+                # 舊版本會自動保存開啟的預設值；升級先關閉一次，再記住新版本的主動選擇。
+                # Reset the old auto-saved default once, then preserve choices made with the opt-in default.
+                if key == "include_author_replies" and settings.get("reply_backfill_preference_version") != 1:
+                    widget.setChecked(False)
+                    continue
                 if isinstance(settings.get(key), bool):
                     widget.setChecked(settings[key])
             proxy_port = settings.get("warp_proxy_port", 40000)
@@ -1235,6 +1242,7 @@ class TwitterDownloader(QWidget):
         # Store preferences here; the login module manages credentials separately from settings JSON.
         self.data_dir.mkdir(parents=True, exist_ok=True)
         settings = {
+            "reply_backfill_preference_version": 1,
             "language": self.language_mode,
             "warp_proxy_port": self.warp_proxy_port_input.value(),
             "usage_guide_seen": self._usage_guide_seen,

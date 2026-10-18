@@ -8,6 +8,7 @@ It never imports the GUI, its download engine, or its client adapter.
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 from datetime import date, datetime
 import json
 import logging
@@ -325,6 +326,49 @@ def _emit(record):
     print(line, flush=True)
 
 
+def serve(cookie_file, event, proxy_url=None):
+    """Serve sequential, framed URL requests in one independent process."""
+    # 管線只傳公開來源與序號；登入檔路徑固定於啟動參數，每個來源仍獨立驗證及關閉連線。
+    # Pipes carry public URLs and IDs only; the cookie path is fixed at startup and each source closes its session.
+    _emit({"type": "ready", "protocol": 1})
+    previous = 0
+    while not event.is_set():
+        line = sys.stdin.buffer.readline(32769)
+        if not line:
+            return 0
+        if len(line) > 32768 or not line.endswith(b"\n"):
+            raise ValueError("invalid request")
+        request = json.loads(line.decode("utf-8"))
+        if not isinstance(request, dict) or set(request) != {"request_id", "url", "conversation"}:
+            raise ValueError("invalid request")
+        request_id = request["request_id"]
+        if type(request_id) is not int or request_id <= previous or type(request["conversation"]) is not bool:
+            raise ValueError("invalid request")
+        previous = request_id
+        url, conversation = request["url"], request["conversation"]
+        (validate_thread_url if conversation else validate_source_url)(url)
+        def emit(record):
+            _emit({**record, "request_id": request_id})
+        source = GallerySource(cookie_file, lambda value: emit({"type": "log", "message": value}), event,
+                               proxy_url=proxy_url)
+        count = 0
+        try:
+            with closing(source.iter_thread(url) if conversation else source.iter_media(url)) as rows:
+                for media_url, metadata in rows:
+                    if event.is_set():
+                        raise Cancelled()
+                    emit({"type": "post", "metadata": metadata} if media_url is None else
+                         {"type": "metadata", "url": media_url, "metadata": metadata})
+                    count += 1
+            emit({"type": "done", "ok": True, "count": count})
+        except Exception as error:
+            code = error_code(error)
+            emit({"type": "error", "code": code, "message": ERROR_REASONS[code]})
+            emit({"type": "done", "ok": False, "count": count})
+            return 1
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Extract X media metadata as JSONL using gallery-dl.")
     parser.add_argument("--url", help="HTTPS X search, author media, or post URL")
@@ -332,6 +376,7 @@ def main(argv=None) -> int:
     parser.add_argument("--smoke-test", action="store_true", help="Construct supported extractors without network access")
     parser.add_argument('--proxy', help='Optional local WARP SOCKS5 endpoint; no credentials')
     parser.add_argument('--conversation', action='store_true', help='Emit all post contexts in a tweet conversation')
+    parser.add_argument('--serve', action='store_true', help='Serve sequential framed requests on stdin')
     args = parser.parse_args(argv)
     if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="strict", newline="\n", write_through=True)
@@ -345,6 +390,8 @@ def main(argv=None) -> int:
                 pass  # Unit-test invocation may run outside the main thread.
     count = 0
     try:
+        if args.serve and (args.url or args.conversation or args.smoke_test):
+            raise ValueError("incompatible modes")
         if args.conversation:
             validate_thread_url(args.url)
         if args.smoke_test:
@@ -357,12 +404,15 @@ def main(argv=None) -> int:
             _emit({"type": "done", "ok": True, "count": 0, "extractors": names,
                    "version": version("gallery-dl")})
             return 0
-        if not args.url or args.cookies is None:
+        if (not args.url and not args.serve) or args.cookies is None:
             raise ValueError("missing URL or cookie path")
-        validate_source_url(args.url)
+        if args.url:
+            validate_source_url(args.url)
         cookie_file = args.cookies.expanduser().resolve(strict=True)
         if not cookie_file.is_file() or cookie_file.stat().st_size > 1024 * 1024:
             raise ValueError("invalid cookie file")
+        if args.serve:
+            return serve(cookie_file, event, args.proxy)
         source = GallerySource(cookie_file, lambda value: _emit({"type": "log", "message": value}), event,
                                proxy_url=args.proxy)
         rows = source.iter_thread(args.url) if args.conversation else source.iter_media(args.url)

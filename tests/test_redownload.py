@@ -221,7 +221,7 @@ class RedownloadTests(unittest.TestCase):
 
     def test_completed_reply_requires_stored_verified_membership(self):
         seed, child = thread_item(tags=["noonle"]), thread_item("1002", parent="1001")
-        result = DownloadEngine(self.options(), source=ThreadSource([seed], [seed, child]), session=Session(), log=self.logs.append).run()
+        result = DownloadEngine(self.options(include_author_replies=True), source=ThreadSource([seed], [seed, child]), session=Session(), log=self.logs.append).run()
         self.assertEqual(result.downloaded, 2)
         result = self.force(keys=("twitter:1002:1",), include_author_replies=False)
         self.assertEqual((result.downloaded, result.failed), (1, 0))

@@ -611,5 +611,6 @@
   "請在「下載狀況與預覽」查看紀錄，修正問題後可重新開始。": "View the log in “Download status and preview”, fix the issue, then start again.",
   "X 登入": "X sign-in",
   "先設定標籤，再於「下載設定」的「X 登入」儲存登入狀態。之後可隨時從「更多功能 → 使用說明」重看這份引導。": "Set your tags, then save your sign-in under “X sign-in” in “Download settings”. You can reopen this guide at any time from “More tools → Help”.",
-  "無法記住說明視窗偏好；下次仍可從「更多功能 → 使用說明」開啟。": "Could not save the guide preference. You can still open it next time from “More tools → Help”."
+  "無法記住說明視窗偏好；下次仍可從「更多功能 → 使用說明」開啟。": "Could not save the guide preference. You can still open it next time from “More tools → Help”.",
+  "補抓原作者在同一討論串的圖片與影片（會多花一些時間載入）": "Backfill images and videos by the original author in the same thread (takes extra time to load)"
 }

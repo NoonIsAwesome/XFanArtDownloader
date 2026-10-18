@@ -70,6 +70,7 @@ class UiTests(unittest.TestCase):
                 time.sleep(delay)
 
     def test_snapshot_and_source_master_switch(self):
+        self.assertFalse(self.window.reply_media_checkbox.isChecked())
         self.assertTrue(self.window.search_checkbox.isChecked())
         self.assertTrue(self.window.author_media_checkbox.isChecked())
         self.assertTrue(self.window.discover_authors_checkbox.isChecked())
@@ -98,6 +99,23 @@ class UiTests(unittest.TestCase):
         self.assertEqual(disabled.authors, ())
         self.assertFalse(disabled.discover_authors)
         self.assertFalse(self.window.authors_input.isEnabled())
+
+    def test_legacy_reply_default_is_reset_once_and_new_opt_in_is_preserved(self):
+        self.window.data_dir.mkdir(exist_ok=True)
+        self.window.settings_file.write_text(json.dumps({"include_author_replies": True,
+            "hashtag": "#saved", "delay": False}), encoding="utf-8")
+        self.window._load_settings()
+        self.assertFalse(self.window.reply_media_checkbox.isChecked())
+        self.assertFalse(self.window.snapshot_options().include_author_replies)
+        self.assertEqual(self.window.hashtag_input.text(), "#saved")
+        self.assertFalse(self.window.human_behavior_checkbox.isChecked())
+        self.assertIn("（會多花一些時間載入）", self.window.reply_media_checkbox.text())
+        self.window.reply_media_checkbox.setChecked(True)
+        self.window._save_settings()
+        self.window.reply_media_checkbox.setChecked(False)
+        self.window._load_settings()
+        self.assertTrue(self.window.reply_media_checkbox.isChecked())
+        self.assertTrue(self.window.snapshot_options().include_author_replies)
 
     def test_fresh_target_is_blank_and_saved_legacy_target_is_preserved(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as directory:
@@ -500,7 +518,7 @@ class UiTests(unittest.TestCase):
         self.window._download_completed(result(downloaded=3, posts=2))
         self.assertEqual(self.window.run_state_label.text(), "本輪處理完成")
         self.assertIn("下載 3", self.window.result_detail_label.text())
-        self.assertIn("處理 2", self.window.result_detail_label.text())
+        self.assertIn("處理 2", self.window.status_box.toPlainText())
         self.window._download_failed("offline")
         self.assertEqual(self.window.run_state_label.text(), "下載未完成")
 

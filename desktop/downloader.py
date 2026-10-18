@@ -216,7 +216,7 @@ class DownloadOptions:
     hashtags: tuple[str, ...] = ()
     warp_proxy: bool = False
     warp_proxy_port: int = 40000
-    include_author_replies: bool = True
+    include_author_replies: bool = False
     date_window_search: bool = True
     resume: bool = True
     retry_media_ids: tuple[str, ...] = ()
@@ -523,7 +523,8 @@ class DownloadEngine:
             data = row.get("data") or {}
             if kind == "thread":
                 state = self._collect_thread(row["url"], row["name"], str(data["seed_id"]),
-                    known=bool(data.get("known")) or str(data["seed_id"]) in self._retry_posts,
+                    known=bool(data.get("known")) or str(data["seed_id"]) in self._retry_posts
+                          or str(data["seed_id"]) in self._posts,
                     ledger_managed=True, source_key=key)
             elif kind == "retry":
                 # 選取重試只允許既有資格的指定鍵；更新網址也不擴散下載其他媒體。
@@ -597,7 +598,8 @@ class DownloadEngine:
             if not self.options.cookie_file or not self.options.cookie_file.is_file():
                 raise ValueError("尚未儲存登入 Cookie。請先開啟瀏覽器登入 X，再儲存 Cookie 或匯入 cookies.txt。")
             validate_cookies(self.options.cookie_file)
-            self.source = GallerySource(self.options.cookie_file, self.log, self.stop_event, proxy_url=self.proxy_url)
+            self.source = GallerySource(self.options.cookie_file, self.log, self.stop_event,
+                                        proxy_url=self.proxy_url, reuse_process=True)
         if not self._redownload_keys:
             self.options.output_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -648,7 +650,7 @@ class DownloadEngine:
                 try:
                     # 續跑先處理未完成來源；歷史搜尋 ID 不再消耗本輪新貼文配額。
                     # Resume unfinished sources first; prior job search IDs do not consume the new budget.
-                    for kind in ("retry", "direct", "thread", "search"):
+                    for kind in ("retry", "direct", "search"):
                         for spec in list(self.ledger.sources.values()):
                             if spec["kind"] == kind:
                                 self._check_stop()
@@ -662,6 +664,12 @@ class DownloadEngine:
                         for author in sorted(authors):
                             self.ledger.author(author)
                             self._execute_source(source_spec("author", f"https://x.com/{author}/media", f"作者媒體 @{author}", author=author))
+                    # 主圖與作者媒體先完成，再處理已去重、可續跑的留言來源。
+                    # Finish primary media before processing deduplicated, resumable reply sources.
+                    threads = [row for row in self.ledger.sources.values() if row["kind"] == "thread"]
+                    for spec in threads:
+                        self._check_stop()
+                        self._execute_source(spec)
                     if not self.ledger.sources and not self._attempted and not self.result.errors:
                         self.result.errors.append("沒有可執行的來源。請啟用標籤搜尋、輸入作者或貼入貼文網址。")
                 except Cancelled:
@@ -682,6 +690,8 @@ class DownloadEngine:
         except Cancelled:
             self.result.stopped = True
         finally:
+            if isinstance(self.source, GallerySource):
+                self.source.close()
             if self._owns_session:
                 self.session.close()
         if self.result.stopped:
@@ -963,7 +973,9 @@ class DownloadEngine:
         if ((self.options.include_author_replies or self._selected_keys) and hasattr(self.source, "iter_thread")
                 and "/status/" in url):
             seed_id = _POST_PATH.fullmatch(urlparse(url).path)[1]
-            return self._collect_thread(url, source_name, seed_id, known=seed_id in self._retry_posts)
+            if self._selected_keys:
+                return self._collect_thread(url, source_name, seed_id, known=seed_id in self._retry_posts)
+            self._collect_thread(url, source_name, seed_id, known=seed_id in self._retry_posts, defer=True)
         self.log(f"開始來源：{source_name}")
         count = 0
         iterator = None
@@ -1001,7 +1013,7 @@ class DownloadEngine:
                 self._save_media(media_url, metadata, context)
                 if self.options.include_author_replies and hasattr(self.source, "iter_thread"):
                     self._collect_thread(f"https://x.com/i/web/status/{post_id}",
-                                         "同作者留言補抓", post_id, known=True)
+                                         "同作者留言補抓", post_id, known=True, defer=True)
             if count == 0:
                 self.log(f"{source_name} 未返回媒體；這不代表 X 上沒有其他符合的作品。")
             return "completed"
@@ -1057,7 +1069,7 @@ class DownloadEngine:
         self._download(self.store.media_state(key))
 
     def _collect_thread(self, url: str, source_name: str, seed_id: str, *, known: bool,
-                        ledger_managed: bool = False, source_key: str | None = None) -> str:
+                        ledger_managed: bool = False, source_key: str | None = None, defer: bool = False) -> str:
         # 只有已驗證起點能授權無標籤留言；一般來源不享有這個例外。
         # Only a verified seed authorizes tagless replies; ordinary sources retain the strict tag gate.
         if self.ledger and not ledger_managed:
@@ -1068,7 +1080,7 @@ class DownloadEngine:
                 # An earlier untagged snapshot must not consume a later qualified thread lookup.
                 self.ledger.state(row["key"], "queued", "已找到符合標籤的起點，重新驗證討論串。")
                 self._executed_source_keys.discard(row["key"])
-            return self._execute_source(spec)
+            return "queued" if defer else self._execute_source(spec)
         if self._thread_rate_limited:
             return "partial"
         if seed_id in self._thread_done:

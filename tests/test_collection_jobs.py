@@ -120,9 +120,9 @@ class ResumeTests(unittest.TestCase):
 
     def test_thread_partial_does_not_force_completed_search_rescan(self):
         root, child = thread_item(tags=["noonle"]), thread_item("1002", parent="1001")
-        first = self.run_engine(ThreadSource([root], GallerySourceError("network")))
+        first = self.run_engine(ThreadSource([root], GallerySourceError("network")), include_author_replies=True)
         source = ThreadSource([], [root, child])
-        second = self.run_engine(source)
+        second = self.run_engine(source, include_author_replies=True)
         self.assertEqual((second.resumed, second.job_id, second.downloaded), (True, first.job_id, 1))
         self.assertEqual(source.urls, [])
         self.assertEqual(len(source.thread_urls), 1)
@@ -204,7 +204,7 @@ class ResumeTests(unittest.TestCase):
                     raise OSError("offline")
                 return super().get(url, **kwargs)
         with patch("downloader.threading.Event.wait", return_value=False):
-            self.run_engine(ThreadSource([root], [root, child]), ChildFail())
+            self.run_engine(ThreadSource([root], [root, child]), ChildFail(), include_author_replies=True)
         result = DownloadEngine(self.options(hashtag=" ", retry_media_ids=("twitter:1002:1",), include_author_replies=False),
             source=Source([]), session=Session(), log=self.logs.append).run()
         self.assertEqual((result.downloaded, result.search_posts, result.pending_media), (1, 0, 0))

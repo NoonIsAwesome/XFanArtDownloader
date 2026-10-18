@@ -19,6 +19,7 @@ import threading
 import time
 from urllib.parse import parse_qs, urlsplit
 from network import validate_proxy_url
+from gallery_worker import WorkerFailure, WorkerTransport
 
 MAX_LINE_BYTES = 1024 * 1024
 IDLE_TIMEOUT = 240.0  # Includes the helper's bounded retries on a slow network.
@@ -174,11 +175,90 @@ class _WindowsProcessJob:
 
 
 class GallerySource:
-    def __init__(self, cookie_file: Path | None, log, stop_event: threading.Event, *, proxy_url: str | None = None):
+    def __init__(self, cookie_file: Path | None, log, stop_event: threading.Event, *, proxy_url: str | None = None,
+                 reuse_process: bool = False):
         self.cookie_file = Path(cookie_file) if cookie_file is not None else None
         self.log = log
         self.stop_event = stop_event
         self.proxy_url = validate_proxy_url(proxy_url) if proxy_url is not None else None
+        self.reuse_process = reuse_process
+        self._worker = None
+
+    def close(self):
+        if self._worker is not None:
+            self._worker.close()
+            self._worker = None
+
+    def _decode_record(self, value, *, conversation, count):
+        # 單次及重用程序使用同一份驗證，保持來源、筆數與私人欄位的安全界線一致。
+        # Both transports share validation for sources, counts and private metadata boundaries.
+        try:
+            record = json.loads(value.decode("utf-8"))
+        except (ValueError, UnicodeError, RecursionError):
+            self._fail("protocol")
+        if not isinstance(record, dict):
+            self._fail("protocol")
+        kind = record.get("type")
+        if kind == "error":
+            code = record.get("code")
+            if not isinstance(code, str) or code not in SOURCE_REASONS:
+                code = next((name for name, reason in SOURCE_REASONS.items()
+                             if record.get("message") == reason), "source")
+            self._fail(code)
+        if kind in {"metadata", "post"}:
+            if (kind == "post" and not conversation) or (kind == "metadata" and not _media_url(record.get("url"))):
+                self._fail("protocol")
+            if not isinstance(record.get("metadata"), dict) or not _public_metadata(record["metadata"]):
+                self._fail("protocol")
+        elif kind == "done":
+            if record.get("ok") is not True:
+                self._fail("incomplete")
+            if type(record.get("count")) is not int or record["count"] != count:
+                self._fail("protocol")
+        elif kind != "log":
+            self._fail("protocol")
+        return record
+
+    def _worker_records(self, url, *, conversation):
+        self._check_stop()
+        url = (_thread_url if conversation else _source_url)(url)
+        if self.cookie_file is None:
+            self._fail("cookies")
+        complete = False
+        try:
+            if self._worker is None:
+                command = self._command() + ["--serve", "--cookies", str(self.cookie_file.resolve())]
+                if self.proxy_url is not None:
+                    command += ["--proxy", self.proxy_url]
+                self._worker = WorkerTransport(command, self.stop_event, self._reader, _WindowsProcessJob,
+                    queue_size=QUEUE_SIZE, timeout=IDLE_TIMEOUT)
+            request_id = self._worker.begin(url, conversation)
+            count = 0
+            while True:
+                self._check_stop()
+                record = self._decode_record(self._worker.read(), conversation=conversation, count=count)
+                # 來源序號禁止舊回應流入下一個來源；取消後直接丟棄整個程序。
+                # Request IDs prevent stale output crossing source boundaries; cancellation discards the process.
+                if type(record.get("request_id")) is not int or record["request_id"] != request_id:
+                    self._fail("protocol")
+                kind = record["type"]
+                if kind == "log":
+                    self.log(_safe_text(record.get("message")))
+                elif kind == "done":
+                    self._worker.finish()
+                    complete = True
+                    yield record
+                    return
+                else:
+                    count += 1
+                    yield record
+        except WorkerFailure as error:
+            self._fail(error.code if error.code in SOURCE_REASONS else "source")
+        except OSError:
+            self._fail("startup")
+        finally:
+            if not complete:
+                self.close()
 
     def _check_stop(self):
         if self.stop_event.is_set():
@@ -233,6 +313,9 @@ class GallerySource:
             push(("eof", None))
 
     def _records(self, url=None, *, smoke=False, conversation=False, idle_timeout=None):
+        if self.reuse_process and not smoke:
+            yield from self._worker_records(url, conversation=conversation)
+            return
         # 每次呼叫重建程序、佇列與讀取執行緒，重新開始不沿用上一輪輸出。
         # Every call gets a fresh process, queue, and reader; restarts never reuse stale output.
         self._check_stop()
@@ -292,43 +375,15 @@ class GallerySource:
                     break
                 if completed is not None:
                     self._fail("protocol")
-                try:
-                    record = json.loads(value.decode("utf-8"))
-                except (ValueError, UnicodeError, RecursionError):
-                    self._fail("protocol")
-                if not isinstance(record, dict):
-                    self._fail("protocol")
-                record_type = record.get("type")
-                if record_type == "error":
-                    code = record.get("code")
-                    if not isinstance(code, str) or code not in SOURCE_REASONS:
-                        # Older helpers emitted these exact fixed reasons. Only
-                        # exact allowlisted copy is recognized, never raw text.
-                        code = next((name for name, reason in SOURCE_REASONS.items()
-                                     if record.get("message") == reason), "source")
-                    self._fail(code)
+                record = self._decode_record(value, conversation=conversation, count=count)
+                record_type = record["type"]
                 if record_type == "log":
                     self.log(_safe_text(record.get("message")))
-                elif record_type == "metadata":
-                    if not _media_url(record.get("url")) or not isinstance(record.get("metadata"), dict) or not _public_metadata(record["metadata"]):
-                        self._fail("protocol")
-                    count += 1
-                    yield record
-                elif record_type == "post":
-                    # post 只提供串關聯證據；只有明確啟用討論串模式才接受。
-                    # Accept post-context records only in explicit thread mode; they provide evidence only.
-                    if not conversation or not isinstance(record.get("metadata"), dict) or not _public_metadata(record["metadata"]):
-                        self._fail("protocol")
+                elif record_type in {"metadata", "post"}:
                     count += 1
                     yield record
                 elif record_type == "done":
-                    if record.get("ok") is not True:
-                        self._fail("incomplete")
-                    if type(record.get("count")) is not int or record["count"] != count:
-                        self._fail("protocol")
                     completed = record
-                elif record_type != "log":
-                    self._fail("protocol")
             try:
                 # 完成標記、筆數與程序正常退出必須全部成立，才能宣告來源完成。
                 # Completion requires a valid marker, matching record count, and successful process exit.

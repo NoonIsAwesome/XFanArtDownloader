@@ -573,8 +573,30 @@ class ThreadSource(Source):
 class ThreadEngineTests(unittest.TestCase):
     setUp = EngineTests.setUp
     tearDown = EngineTests.tearDown
-    options = EngineTests.options
+    def options(self, **kwargs):
+        # 討論串案例明確開啟選項；一般收集的預設關閉由獨立案例驗證。
+        # Thread fixtures opt in explicitly; a separate case covers the default-off path.
+        kwargs.setdefault("include_author_replies", True)
+        return EngineTests.options(self, **kwargs)
     run_engine = EngineTests.run_engine
+
+    def test_primary_media_is_saved_before_any_thread_query(self):
+        roots = [thread_item("1001",tags=["noonle"]), thread_item("1002",conversation="1002",tags=["noonle"])]
+        def threads(url):
+            # 進入第一個留言來源時，兩張主圖都必須已完整落地。
+            # Both primary images must be durable before the first reply source starts.
+            files = list((self.root / "downloads").rglob("*.png"))
+            self.assertEqual(len(files), 2)
+            return [roots[0] if url.endswith("1001") else roots[1]]
+        result = self.run_engine(ThreadSource(roots,threads))
+        self.assertEqual((result.downloaded,result.errors), (2,[]))
+
+    def test_default_options_never_start_a_thread_query(self):
+        source = ThreadSource([thread_item(tags=["noonle"])], AssertionError("Unexpected thread query"))
+        options = EngineTests.options(self)
+        result = DownloadEngine(options,log=self.logs.append,source=source,session=Session()).run()
+        self.assertFalse(options.include_author_replies)
+        self.assertEqual((result.downloaded,source.thread_urls,result.errors),(1,[],[]))
 
     def test_matching_seed_collects_only_same_author_related_media_with_original_tags(self):
         root = thread_item(tags=["noonle"])
@@ -652,7 +674,7 @@ class ThreadEngineTests(unittest.TestCase):
         self.assertEqual((second.posts, second.downloaded, second.skipped), (1, 1, 1))
         self.assertEqual(len(source.thread_urls), 1)
 
-    def test_rejected_url_snapshot_does_not_consume_later_matching_seed_thread(self):
+    def test_deferred_url_thread_uses_later_matching_seed_without_duplicate_query(self):
         root = thread_item(tags=["noonle"])
         child = thread_item("1002", parent="1001")
         calls = []
@@ -662,7 +684,7 @@ class ThreadEngineTests(unittest.TestCase):
         source = ThreadSource([root], thread_batch)
         result = self.run_engine(source, tweet_urls=("https://x.com/artista/status/1001",))
         self.assertEqual((result.posts, result.downloaded, result.errors), (1, 2, []))
-        self.assertEqual(len(source.thread_urls), 2)
+        self.assertEqual(len(source.thread_urls), 1)
 
     def test_reply_retry_requires_saved_membership_current_root_tag_and_same_identity(self):
         root, child = thread_item(tags=["noonle"]), thread_item("1002", parent="1001")
