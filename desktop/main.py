@@ -249,6 +249,8 @@ class TwitterDownloader(QWidget):
         self.download_path = str(self.base_dir / "downloads")
         self.successful_downloads = 0
         self._active_retry_count = 0
+        self._active_redownload_count = 0
+        self._active_redownload_mode = "copy"
         self.theme_mode = "light"
         self._run_state = "尚未開始"
         self.is_downloading = False
@@ -753,8 +755,8 @@ class TwitterDownloader(QWidget):
         self._start_download_options(options)
 
     def _start_download_options(self, options):
-        # 一般收集與單項重試共用執行緒生命週期；只讓已驗證的設定進入此處。
-        # Normal collection and selected retries share one worker lifecycle after their inputs are validated.
+        # 收集、失敗重試與重新下載共用工作生命週期；重新下載的檔案規則仍交給引擎。
+        # Collection, retries and redownloads share one lifecycle; the engine owns file commit rules.
         if self.is_downloading or self._login_busy or self._close_pending or self._download_thread is not None:
             return
         try:
@@ -765,6 +767,8 @@ class TwitterDownloader(QWidget):
             return
         self.successful_downloads = 0
         self._active_retry_count = len(options.retry_media_ids)
+        self._active_redownload_count = len(options.redownload_media_ids)
+        self._active_redownload_mode = options.redownload_mode
         self._avatar_loader.cancel()
         self._avatar_loader.configure(options.warp_proxy, options.warp_proxy_port)
         self._preview_loader.cancel()
@@ -773,8 +777,12 @@ class TwitterDownloader(QWidget):
         self.refresh_current_media()
         self.is_downloading = True
         self._run_state = "正在收集"
-        self._set_result_detail("正在重試選取媒體；只使用紀錄中已驗證的收集範圍。" if options.retry_media_ids
-                               else '正在逐一核對來源與完整標籤；下載紀錄會持續更新。')
+        if options.redownload_media_ids:
+            self._set_result_detail("正在重新下載選取媒體；原檔會保留到新檔下載並驗證成功。")
+        elif options.retry_media_ids:
+            self._set_result_detail("正在重試選取媒體；只使用紀錄中已驗證的收集範圍。")
+        else:
+            self._set_result_detail('正在逐一核對來源與完整標籤；下載紀錄會持續更新。')
         # 每輪獨立的取消旗標可防止「停止後重開」立即被上一輪的停止狀態取消。
         # A fresh stop event prevents a restarted run from inheriting the previous cancellation.
         self._stop_event = threading.Event()
@@ -794,7 +802,11 @@ class TwitterDownloader(QWidget):
         thread.finished.connect(thread.deleteLater)
         self._update_controls()
         targets = "、".join("#" + tag for tag in options.hashtags)
-        if options.retry_media_ids:
+        if options.redownload_media_ids:
+            mode = tr("覆寫原檔") if options.redownload_mode == "overwrite" else tr("另存副本")
+            self._log("⏳ 正在重新下載選取的 {count} 個媒體（{mode}）；只處理原儲存位置的選取項目。",
+                      count=len(options.redownload_media_ids), mode=mode)
+        elif options.retry_media_ids:
             self._log("⏳ 正在重試選取的 {count} 個媒體；其餘來源不會啟動。", count=len(options.retry_media_ids))
         else:
             self._log("⏳ 開始處理 {targets}；原貼文須符合任一完整標籤，同串原作者留言依補抓設定處理，重複媒體只下載一次。", targets=targets)
@@ -971,6 +983,7 @@ class TwitterDownloader(QWidget):
             from history_dialog import HistoryDialog
             self._history_dialog = HistoryDialog(parent=self, db_path=self.data_dir / "downloads.sqlite3", theme=self.theme_mode)
             self._history_dialog.retryRequested.connect(self._retry_history_items)
+            self._history_dialog.redownloadRequested.connect(self._redownload_history_items)
         self._history_dialog.set_retry_enabled(not self.is_downloading and not self._login_busy)
         self._history_dialog.refresh()
         self._history_dialog.show()
@@ -989,6 +1002,27 @@ class TwitterDownloader(QWidget):
             hashtag="", output_dir=Path(self.download_path).expanduser(), database_path=self.data_dir / "downloads.sqlite3",
             cookie_file=self.cookie_file if self.cookie_file.is_file() else None,
             retry_media_ids=tuple(dict.fromkeys(media_ids)), search_enabled=False, discover_authors=False,
+            authors=(), tweet_urls=(), since=None, resume=False,
+            folder_by_user=self.folder_by_user_checkbox.isChecked(), delay=self.human_behavior_checkbox.isChecked(),
+            warp_proxy=self.warp_proxy_checkbox.isChecked(), warp_proxy_port=self.warp_proxy_port_input.value(),
+        )
+        self._start_download_options(options)
+
+    @pyqtSlot(object, str)
+    def _redownload_history_items(self, media_ids, mode):
+        # 選擇與覆寫確認由紀錄視窗完成；此處再次限制模式與工作範圍，不採用目前搜尋表單。
+        # History handles the choice and overwrite confirmation; recheck scope without using the search form.
+        if self.is_downloading or self._login_busy or self._close_pending or self._download_thread is not None:
+            return
+        if not isinstance(mode, str) or mode not in {"copy", "overwrite"}:
+            return
+        if not isinstance(media_ids, (tuple, list)) or not media_ids or any(not isinstance(item, str) or not item for item in media_ids):
+            return
+        options = DownloadOptions(
+            hashtag="", output_dir=Path(self.download_path).expanduser(), database_path=self.data_dir / "downloads.sqlite3",
+            cookie_file=self.cookie_file if self.cookie_file.is_file() else None,
+            redownload_media_ids=tuple(dict.fromkeys(media_ids)), redownload_mode=mode,
+            retry_failed=False, search_enabled=False, discover_authors=False,
             authors=(), tweet_urls=(), since=None, resume=False,
             folder_by_user=self.folder_by_user_checkbox.isChecked(), delay=self.human_behavior_checkbox.isChecked(),
             warp_proxy=self.warp_proxy_checkbox.isChecked(), warp_proxy_port=self.warp_proxy_port_input.value(),

@@ -123,6 +123,81 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(self.store.media_state("twitter:102:1")["state"], "failed")
         self.assertEqual(self.store.media_state("twitter:101:1")["state"], "downloaded")
 
+    def test_redownload_only_selected_completed_records_and_requires_choice(self):
+        self.show()
+        emitted = []
+        self.dialog.redownloadRequested.connect(lambda identifiers, mode:emitted.append((identifiers, mode)))
+        self.select("twitter:102:1")
+        self.assertFalse(self.dialog.redownload_button.isEnabled())
+        self.dialog.history_table.selectAll()
+        self.assertTrue(self.dialog.redownload_button.isEnabled())
+        with patch.object(history, "choose_redownload_mode", return_value="copy") as choose:
+            self.dialog.set_retry_enabled(False)
+            self.dialog._redownload_selected()
+            choose.assert_not_called()
+            self.dialog.set_retry_enabled(True)
+            QTest.mouseClick(self.dialog.redownload_button, Qt.MouseButton.LeftButton)
+            choose.assert_called_once_with(1, parent=self.dialog, theme="light")
+        self.assertEqual(emitted, [(["twitter:101:1"], "copy")])
+        self.assertEqual(self.store.media_state("twitter:101:1")["state"], "downloaded")
+        with patch.object(history, "choose_redownload_mode", return_value=None):
+            self.dialog._redownload_selected()
+        self.assertEqual(len(emitted), 1)
+        with patch.object(history, "choose_redownload_mode", return_value="overwrite"):
+            self.dialog._redownload_selected()
+        self.assertEqual(emitted[-1], (["twitter:101:1"], "overwrite"))
+
+    def test_redownload_rechecks_busy_gate_after_mode_choice(self):
+        self.show()
+        self.select("twitter:101:1")
+        emitted = []
+        self.dialog.redownloadRequested.connect(lambda *arguments:emitted.append(arguments))
+        def became_busy(*_arguments, **_keywords):
+            self.dialog.set_retry_enabled(False)
+            return "overwrite"
+        with patch.object(history, "choose_redownload_mode", side_effect=became_busy):
+            self.dialog._redownload_selected()
+        self.assertEqual(emitted, [])
+
+    def test_latest_copy_event_is_plain_text_and_keeps_original_open_target(self):
+        self.show()
+        row = next(row for row in self.dialog._rows if row["media_key"] == "twitter:101:1")
+        row["latest_redownload"] = {"mode":"copy", "state":"downloaded",
+                                    "path":str(self.root / "copy<b>.jpg"), "error":""}
+        self.select("twitter:101:1")
+        self.assertIn("最近重新下載", self.dialog.detail_label.text())
+        self.assertIn("copy<b>.jpg", self.dialog.detail_label.text())
+        self.assertEqual(self.dialog.detail_label.textFormat(), Qt.TextFormat.PlainText)
+        self.assertIn("copy&lt;b&gt;.jpg", self.dialog.detail_label.toolTip())
+        with patch.object(history.QDesktopServices, "openUrl") as opened:
+            QTest.mouseClick(self.dialog.file_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(Path(opened.call_args[0][0].toLocalFile()), self.root / "101_1.jpg")
+
+    def test_three_footer_actions_fit_minimum_window_in_all_languages(self):
+        self.dialog.resize(800, 590)
+        self.show()
+        row = next(row for row in self.dialog._rows if row["media_key"] == "twitter:101:1")
+        row["latest_redownload"] = {"mode":"copy", "state":"downloaded",
+                                    "path":str(self.root / "101_1_copy_2.jpg"), "error":""}
+        self.select("twitter:101:1")
+        for language in ("zh_TW", "zh_CN", "en", "ja", "ko"):
+            i18n.set_language(language)
+            self.dialog.refresh_language()
+            for theme in ("light", "dark"):
+                self.dialog.set_theme(theme)
+                self.app.processEvents()
+                self.dialog.resize(800, 590)
+                self.app.processEvents()
+                self.assertEqual(self.dialog.width(), 800)
+                self.assertEqual(self.dialog.height(), 590)
+                buttons = (self.dialog.retry_button, self.dialog.redownload_button, self.dialog.close_button)
+                for button in buttons:
+                    self.assertTrue(self.dialog.rect().contains(button.geometry()))
+                    self.assertGreaterEqual(button.width(), button.minimumSizeHint().width())
+                for first, second in zip(buttons, buttons[1:]):
+                    self.assertFalse(first.geometry().intersects(second.geometry()))
+                self.assertLess(self.dialog.history_table.geometry().bottom(), self.dialog.detail_label.geometry().top())
+
     def test_open_actions_are_explicit_and_revalidate_missing_files(self):
         with patch.object(history.QDesktopServices, "openUrl") as opened:
             self.show()
@@ -152,6 +227,7 @@ class HistoryTests(unittest.TestCase):
             for theme in ("light","dark"):
                 self.dialog.set_theme(theme)
                 self.assertEqual(self.dialog.retry_button.text(), i18n.tr("重試選取的失敗項目"))
+                self.assertEqual(self.dialog.redownload_button.text(), i18n.tr("重新下載選取項目"))
                 self.assertEqual(self.dialog._selected_media()[0]["media_key"], "twitter:102:1")
                 palette = self.dialog.palette()
                 self.assertNotEqual(palette.color(QPalette.ColorRole.Window), palette.color(QPalette.ColorRole.WindowText))
@@ -169,6 +245,7 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual([row["key"] for row in self.dialog._sources], ["partial","queued","done"])
         self.assertEqual(self.dialog.sources_table.item(0,3).text(), i18n.tr("已讀取 {count} 筆",count=3))
         self.assertFalse(self.dialog.retry_button.isVisible())
+        self.assertFalse(self.dialog.redownload_button.isVisible())
         self.store.set_source_state(job_id, "partial", "partial", progress={"records":5})
         self.dialog.refresh()
         self.loaded()

@@ -171,6 +171,26 @@ class Store:
             );
             PRAGMA user_version = 3;
         """)
+        # 重新下載是附加事件，副本不冒充新的 canonical 媒體，也不清掉原成功紀錄。
+        # Redownloads are additive events: a copy never masquerades as another canonical media row.
+        self._db.executescript("""
+            CREATE TABLE IF NOT EXISTS media_redownloads (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                media_key TEXT NOT NULL REFERENCES media(media_key),
+                mode TEXT NOT NULL CHECK (mode IN ('copy', 'overwrite')),
+                state TEXT NOT NULL CHECK (state IN ('downloaded', 'failed', 'stopped')),
+                path TEXT NOT NULL DEFAULT '', size INTEGER NOT NULL DEFAULT 0,
+                sha256 TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
+                prior_path TEXT NOT NULL DEFAULT '', prior_size INTEGER NOT NULL DEFAULT 0,
+                prior_sha256 TEXT NOT NULL DEFAULT '', prior_downloaded_at TEXT,
+                recovery_path TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS media_redownloads_latest_idx
+                ON media_redownloads(media_key, event_id DESC);
+        """)
+        if "recovery_path" not in {row[1] for row in self._db.execute("PRAGMA table_info(media_redownloads)")}:
+            self._db.execute("ALTER TABLE media_redownloads ADD COLUMN recovery_path TEXT NOT NULL DEFAULT ''")
 
     @contextmanager
     def _transaction(self) -> Iterator[None]:
@@ -491,6 +511,38 @@ class Store:
                 WHERE media_key = ? AND state IN ('pending','failed')""", (_now(), str(media_key)))
             return cursor.rowcount == 1
 
+    def record_redownload(self, media_key: str, mode: str, state: str, *, path: str = "",
+                          size: int = 0, sha256: str = "", error: str = "", prior: dict | None = None,
+                          recovery_path: str = "") -> int:
+        # 失敗與停止只增事件；覆寫成功的摘要更新與事件在同一筆 SQLite 交易提交。
+        # Failure/stop only append events; successful overwrite metadata and its event commit together.
+        if mode not in {"copy", "overwrite"} or state not in {"downloaded", "failed", "stopped"}:
+            raise ValueError("Invalid redownload mode or state")
+        if state == "downloaded" and (not path or int(size) <= 0 or not re.fullmatch(r"[0-9a-f]{64}", sha256)):
+            raise ValueError("A redownload success requires a verified file")
+        prior = prior or {}
+        now = _now()
+        with self._transaction():
+            row = self._db.execute("SELECT * FROM media WHERE media_key = ?", (str(media_key),)).fetchone()
+            if row is None:
+                raise KeyError(media_key)
+            cursor = self._db.execute("""INSERT INTO media_redownloads
+                (media_key, mode, state, path, size, sha256, error, prior_path, prior_size,
+                 prior_sha256, prior_downloaded_at, created_at, recovery_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (str(media_key), mode, state, str(path) if state == "downloaded" else "",
+                 int(size) if state == "downloaded" else 0, sha256 if state == "downloaded" else "",
+                 str(error)[:2000], str(prior.get("path", row["path"])), int(prior.get("size", row["size"])),
+                 str(prior.get("sha256", row["sha256"])), prior.get("downloaded_at", row["downloaded_at"]), now, str(recovery_path)))
+            if mode == "overwrite" and state == "downloaded":
+                self._db.execute("""UPDATE media SET path = ?, size = ?, sha256 = ?, error = '',
+                    updated_at = ?, last_attempt_at = ?, downloaded_at = ? WHERE media_key = ?""",
+                    (str(path), int(size), sha256, now, now, now, str(media_key)))
+            return cursor.lastrowid
+
+    def redownload_events(self, media_key: str) -> list[dict]:
+        return [dict(row) for row in self._db.execute(
+            "SELECT * FROM media_redownloads WHERE media_key = ? ORDER BY event_id DESC", (str(media_key),))]
+
     def close(self) -> None:
         if self._db is not None:
             self._db.close()
@@ -600,6 +652,16 @@ def fetch_history(db_path, *, status="all", search="", page=1, page_size=40):
             f"m.updated_at, m.downloaded_at, p.author, {filename} AS filename" + base + where
             + " ORDER BY m.updated_at DESC, m.media_key LIMIT ? OFFSET ?",
             (*values, page_size, (page - 1) * page_size)).fetchall()
+        latest = {}
+        if rows and _has_table(db, "media_redownloads"):
+            # 每頁一次查詢附加事件，舊資料庫沒有此可選表時仍照常顯示原紀錄。
+            # Fetch latest events once per page; older databases without this optional table remain readable.
+            keys = [row["media_key"] for row in rows]
+            events = db.execute("""SELECT r.* FROM media_redownloads r JOIN
+                (SELECT media_key, MAX(event_id) AS event_id FROM media_redownloads
+                 WHERE media_key IN (""" + ",".join("?" for _ in keys) + ") GROUP BY media_key) last "
+                "ON r.event_id = last.event_id", keys)
+            latest = {row["media_key"]: dict(row) for row in events}
         for row in rows:
             item = dict(row)
             item["status"] = item["state"]
@@ -608,6 +670,7 @@ def fetch_history(db_path, *, status="all", search="", page=1, page_size=40):
             item["file_exists"] = bool(item["safe_file_path"])
             item["display_path"] = item["filename"]
             item["post_url"] = ("https://x.com/i/web/status/" + str(item["post_id"])) if re.fullmatch(r"[0-9]{1,30}", str(item["post_id"])) else None
+            item["latest_redownload"] = latest.get(item["media_key"])
             result["items"].append(item)
         result.update(total=total, page=page)
     return result

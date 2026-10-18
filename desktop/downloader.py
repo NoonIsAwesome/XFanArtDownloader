@@ -14,6 +14,8 @@ import os
 from pathlib import Path
 import random
 import re
+import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -43,6 +45,14 @@ _POST_PATH = re.compile(r"/(?:[A-Za-z0-9_]{1,15}/status|i/(?:web/)?status)/(\d+)
 
 class LimitReached(Exception):
     """End the current tag search without stopping the author's media stage."""
+
+
+class _RedownloadRejected(ValueError):
+    """Fixed public reasons for an explicit redownload; never upstream payloads."""
+
+    def __init__(self, message: str, *, recovery_path: str = ""):
+        super().__init__(message)
+        self.recovery_path = recovery_path
 
 
 def _validated_media_url(value: str) -> str:
@@ -210,6 +220,8 @@ class DownloadOptions:
     date_window_search: bool = True
     resume: bool = True
     retry_media_ids: tuple[str, ...] = ()
+    redownload_media_ids: tuple[str, ...] = ()
+    redownload_mode: str = "copy"
 
 
 @dataclass
@@ -299,6 +311,14 @@ def validate_file(path: Path, extension: str) -> tuple[int, str]:
 
 class DownloadEngine:
     def __init__(self, options: DownloadOptions, log=print, stop_event=None, *, source=None, session=None, progress=None):
+        if not isinstance(options.redownload_mode, str) or options.redownload_mode not in {"copy", "overwrite"}:
+            raise ValueError("重新下載模式必須是保留副本或覆寫原檔。")
+        if (not isinstance(options.redownload_media_ids, (tuple, list))
+                or any(not isinstance(key, str) or not re.fullmatch(r"twitter:[0-9]{1,24}:[1-9][0-9]{0,8}", key)
+                       for key in options.redownload_media_ids)):
+            raise ValueError("選取的重新下載識別碼無效。")
+        if options.redownload_media_ids and options.retry_media_ids:
+            raise ValueError("重新下載與失敗重試必須分開執行。")
         self.options = options
         self.log = log
         self.progress = progress
@@ -322,11 +342,13 @@ class DownloadEngine:
         self._thread_posts: set[str] = set()
         self._thread_rate_limited = False
         self._source_rate_limited: set[str] = set()
-        self._selected_keys = set(options.retry_media_ids)
+        self._redownload_keys = set(options.redownload_media_ids)
+        self._selected_keys = set(options.retry_media_ids) | self._redownload_keys
         self.ledger = None
         self._search_revisited: set[str] = set()
         self._executed_source_keys: set[str] = set()
         self._refreshed_retry_posts: set[str] = set()
+        self._redownload_refresh_error: str | None = None
 
     def _failure(self, key: str, message: str):
         self.store.mark_failed(key, message)
@@ -373,7 +395,7 @@ class DownloadEngine:
         # Search, author pages, direct URLs, and normal retries share the same tag/date gate.
         if not self._target_tags.intersection(metadata_hashtags(metadata)):
             return False
-        if self.options.since:
+        if self.options.since and not self._redownload_keys:
             post_date = _post_date(metadata)
             if post_date is None or post_date.date() < self.options.since:
                 return False
@@ -574,9 +596,12 @@ class DownloadEngine:
                 raise ValueError("尚未儲存登入 Cookie。請先開啟瀏覽器登入 X，再儲存 Cookie 或匯入 cookies.txt。")
             validate_cookies(self.options.cookie_file)
             self.source = GallerySource(self.options.cookie_file, self.log, self.stop_event, proxy_url=self.proxy_url)
-        self.options.output_dir.mkdir(parents=True, exist_ok=True)
+        if not self._redownload_keys:
+            self.options.output_dir.mkdir(parents=True, exist_ok=True)
         try:
             with Store(self.options.database_path) as self.store:
+                if self._redownload_keys:
+                    return self._run_redownload()
                 raw_tags = self.options.hashtags or self.options.hashtag
                 has_input_tags = bool(raw_tags.strip()) if isinstance(raw_tags, str) else bool(raw_tags)
                 self.tags = self._retry_targets() if self._selected_keys and not has_input_tags else parse_hashtags(raw_tags)
@@ -660,6 +685,272 @@ class DownloadEngine:
         if self.result.stopped:
             self.log("已停止；尚未完成的媒體保留於資料庫，下次可重試。")
         self.log(f"本輪：{self.result.posts} 則符合貼文，下載 {self.result.downloaded}、已存在 {self.result.skipped}、失敗 {self.result.failed}、排除 {self.result.filtered} 則。")
+        return self.result
+
+    @staticmethod
+    def _redownload_paths(row: dict, mode: str):
+        # 明確重下載只使用歷史目錄；拒絕連結、Windows reparse 與越界路徑。
+        # Explicit redownloads use the saved directory and reject links, reparse points, and escapes.
+        extension = str(row["metadata"].get("extension") or "").lower()
+        if extension not in {"jpg", "jpeg", "png", "gif", "webp", "avif", "mp4"}:
+            raise _RedownloadRejected("原紀錄不是支援的圖片或影片格式。")
+        try:
+            root, path = Path(row["target_dir"]), Path(row["path"])
+            if (not root.is_absolute() or not path.is_absolute() or ".." in root.parts or ".." in path.parts
+                    or path.suffix.lower() != "." + extension):
+                raise ValueError()
+            for candidate in (path, *path.parents, root, *root.parents):
+                try:
+                    info = candidate.lstat()
+                except FileNotFoundError:
+                    if candidate == path and mode == "copy":
+                        continue
+                    raise
+                if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                    raise ValueError()
+            root = root.resolve(strict=True)
+            if not root.is_dir() or not path.resolve(strict=False).is_relative_to(root):
+                raise ValueError()
+            path = path.resolve(strict=False)
+            if path.exists() and not path.is_file():
+                raise ValueError()
+            root_info = root.stat()
+            original = None
+            if mode == "overwrite":
+                # 可修改過的有效原檔也可覆寫；下載期間若又有變更則拒絕提交。
+                # Valid user-edited originals are allowed, but concurrent changes abort the commit.
+                size, digest = validate_file(path, extension)
+                info = path.stat()
+                original = (info.st_dev, info.st_ino, info.st_mtime_ns, size, digest)
+            return root, path, (root_info.st_dev, root_info.st_ino), original
+        except (OSError, ValueError, RuntimeError, SyntaxError, Image.DecompressionBombError):
+            raise _RedownloadRejected("原檔路徑不安全、已遺失或無法驗證；請先使用一般補抓處理。") from None
+
+    @contextmanager
+    def _redownload_file(self, row: dict, root: Path):
+        # 與一般下載共用 CDN、TLS、大小及內容驗證；暫存永不取代尚未驗證的原檔。
+        # Retain CDN/TLS/size/content checks; an unverified temporary file never replaces the original.
+        temporary = None
+        try:
+            self._check_stop()
+            with _media_response(self.session, row["url"]) as response:
+                expected = response.headers.get("Content-Length")
+                if expected and (not expected.isdigit() or int(expected) > MAX_MEDIA_BYTES):
+                    raise ValueError()
+                written = 0
+                with tempfile.NamedTemporaryFile(dir=root, prefix=".redownload.", suffix=".part", delete=False) as stream:
+                    temporary = Path(stream.name)
+                    for chunk in response.iter_content(128 * 1024):
+                        self._check_stop()
+                        if chunk:
+                            written += len(chunk)
+                            if written > MAX_MEDIA_BYTES:
+                                raise ValueError()
+                            stream.write(chunk)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                if expected and written != int(expected):
+                    raise ValueError()
+            size, digest = validate_file(temporary, str(row["metadata"]["extension"]).lower())
+            self._check_stop()
+            yield temporary, size, digest
+        finally:
+            if temporary is not None:
+                self._cleanup_redownload_temp(temporary)
+
+    def _cleanup_redownload_temp(self, path: Path):
+        # 防毒暫時鎖住清理檔案時保留它；清理問題不能將已提交的成功變成重試。
+        # Retain a temporarily locked cleanup file; cleanup must never retry a committed success.
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            self.log("暫存備份暫時無法清除，已保留於原目錄；已完成的重新下載不受影響。")
+
+    def _refresh_redownload(self, seed: str, selected: dict[str, dict], cache: dict) -> dict:
+        # 只更新本次記憶體中的指定媒體；不改原成功紀錄，也不收其他作者或貼文。
+        # Refresh selected media in memory only; preserve canonical success rows and exclude unrelated items.
+        if self._redownload_refresh_error:
+            raise _RedownloadRejected(self._redownload_refresh_error)
+        if seed in cache:
+            return cache[seed]
+        result = cache[seed] = {}
+        wanted = {key for key, row in selected.items() if self._retry_seed(row, strict_history=True) == seed}
+        iterator = None
+        try:
+            url = f"https://x.com/i/web/status/{seed}"
+            iterator = self.source.iter_thread(url) if hasattr(self.source, "iter_thread") else self.source.iter_media(url)
+            for media_url, metadata in iterator:
+                self._check_stop()
+                if not media_url:
+                    continue
+                context = post_context(metadata)
+                key = f"twitter:{context['post_id']}:{int(metadata.get('num') or 1)}"
+                previous = selected.get(key)
+                if key not in wanted or not previous:
+                    continue
+                if str(metadata.get("extension") or "").lower() != str(previous["metadata"].get("extension") or "").lower():
+                    continue
+                candidate = dict(previous, url=media_url, metadata=metadata)
+                if self._retry_seed(candidate, strict_history=True) != seed:
+                    continue
+                _validated_media_url(media_url)
+                result[key] = candidate
+                if wanted <= result.keys():
+                    break
+        except Cancelled:
+            raise
+        except GallerySourceError as error:
+            # 已知限流後不再輪流查其他選取貼文，避免同一端點被連續打擾。
+            # A known rate limit stops further selected-post refreshes against the same endpoint.
+            if error.code == "rate_limit":
+                self._redownload_refresh_error = error.public_reason
+            raise _RedownloadRejected(error.public_reason) from None
+        except Exception:
+            raise _RedownloadRejected("無法更新指定媒體的來源；原檔與完成紀錄均已保留。") from None
+        finally:
+            if iterator is not None and hasattr(iterator, "close"):
+                iterator.close()
+        return result
+
+    def _commit_redownload(self, row: dict, temporary: Path, initial, size: int, digest: str) -> Path:
+        # 提交前重查目錄與原檔；副本採原子不覆寫操作，碰到同名就選下一個名稱。
+        # Recheck the directory/original before committing; copies use atomic no-clobber creation.
+        mode = self.options.redownload_mode
+        current = self._redownload_paths(row, mode)
+        if current != initial:
+            raise _RedownloadRejected("下載期間原檔或目錄已變更；已保留原檔，請重新整理後再試。")
+        root, original, _, _ = current
+        self._check_stop()
+        if mode == "overwrite":
+            os.replace(temporary, original)
+            return original
+        for number in range(1, 10001):
+            suffix = "_copy" if number == 1 else f"_copy_{number}"
+            destination = root / f"{original.stem}{suffix}{original.suffix}"
+            try:
+                if os.name == "nt":
+                    # Windows rename 在目的地已存在時會失敗，亦支援 FAT/exFAT。
+                    # Windows rename refuses existing destinations and also supports FAT/exFAT.
+                    os.rename(temporary, destination)
+                else:
+                    os.link(temporary, destination)
+                return destination
+            except FileExistsError:
+                continue
+        raise _RedownloadRejected("同名副本數量過多；請先整理原目錄後再試。")
+
+    @contextmanager
+    def _redownload_commit_guard(self, row: dict, temporary: Path, initial, size: int, digest: str):
+        # 檔案系統與 SQLite 不能共用交易；保留舊檔備份，紀錄提交失敗時只回復本次產物。
+        # Filesystem and SQLite commits differ; retain a backup and roll back only this operation's output.
+        backup = None
+        destination = None
+        try:
+            if self.options.redownload_mode == "overwrite":
+                with tempfile.NamedTemporaryFile(dir=initial[0], prefix=".redownload-backup.", suffix=".part", delete=False) as stream:
+                    backup = Path(stream.name)
+                shutil.copyfile(initial[1], backup)
+                if validate_file(backup, str(row["metadata"]["extension"]).lower()) != initial[3][3:]:
+                    raise _RedownloadRejected("下載期間原檔或目錄已變更；已保留原檔，請重新整理後再試。")
+            destination = self._commit_redownload(row, temporary, initial, size, digest)
+            yield destination
+        except BaseException:
+            if destination is not None:
+                # 不覆蓋提交後由使用者再改過的檔案；只撤銷仍屬於本次的已驗證內容。
+                # Never roll back a subsequent user edit; undo only the verified output created here.
+                try:
+                    extension = str(row["metadata"]["extension"]).lower()
+                    current = self._redownload_paths(dict(row, path=str(destination)), "copy")
+                    if current[2] == initial[2] and validate_file(destination, extension) == (size, digest):
+                        if backup is not None:
+                            os.replace(backup, destination)
+                            backup = None
+                        else:
+                            destination.unlink()
+                except (OSError, ValueError, RuntimeError, SyntaxError, Image.DecompressionBombError):
+                    pass
+                if backup is not None:
+                    # 回復遭鎖定或已有其他變更時，保留唯一舊檔備份並誠實回報。
+                    # If rollback is blocked or the destination changed, retain the only original backup.
+                    recovery = backup
+                    backup = None
+                    raise _RedownloadRejected(
+                        "原檔回復尚未完成；備份已保留於原目錄，請保留 .redownload-backup 開頭的檔案並稍後重試。",
+                        recovery_path=str(recovery)) from None
+            raise
+        finally:
+            if backup is not None:
+                self._cleanup_redownload_temp(backup)
+
+    def _run_redownload(self) -> RunResult:
+        # 這是明確選取的獨立操作，沒有搜尋、作者擴散或一般重試的隱含副作用。
+        # This explicit selection runs alone, without searches, author discovery, or implicit normal retries.
+        self.tags = self._retry_targets()
+        self._target_tags = frozenset(self.tags)
+        selected = {key: row for key in sorted(self._redownload_keys) if (row := self.store.media_state(key))}
+        cache = {}
+        for key in sorted(self._redownload_keys):
+            row = selected.get(key)
+            try:
+                self._check_stop()
+                if not row or row["state"] != "downloaded":
+                    raise _RedownloadRejected("重新下載僅適用已完成紀錄；未完成媒體請使用失敗重試。")
+                seed = self._retry_seed(row, strict_history=True) if self.tags else None
+                if not seed:
+                    raise _RedownloadRejected("選取的媒體缺少可驗證的標籤或討論串關聯，已保留紀錄並略過。")
+                initial = self._redownload_paths(row, self.options.redownload_mode)
+                self._accept_post(str(row["post_id"]))
+                self._media_progress("downloading", row, row["metadata"], initial[1].name, initial[1])
+                downloaded = False
+                # 舊連結先有限重試，再只查一次既有合格貼文；新連結不寫回原完成列。
+                # Retry the saved URL finitely, then refresh its qualified seed once without changing the success row.
+                for refreshed in (False, True):
+                    candidate = row if not refreshed else self._refresh_redownload(seed, selected, cache).get(key)
+                    if not candidate or (refreshed and candidate["url"] == row["url"]):
+                        continue
+                    for attempt in range(3):
+                        try:
+                            with self._redownload_file(candidate, initial[0]) as (temporary, size, digest):
+                                with self._redownload_commit_guard(row, temporary, initial, size, digest) as destination:
+                                    self.store.record_redownload(key, self.options.redownload_mode, "downloaded",
+                                        path=str(destination), size=size, sha256=digest, prior=row)
+                            self.result.downloaded += 1
+                            icon = "🎬" if str(row["metadata"].get("extension")).lower() == "mp4" else "🖼️"
+                            display = self._media_progress("downloaded", row, candidate["metadata"], destination.name, destination)
+                            self.log(f"{icon} 重新下載完成：{display}")
+                            downloaded = True
+                            break
+                        except (Cancelled, _RedownloadRejected):
+                            raise
+                        except Exception:
+                            self._check_stop()
+                            if attempt < 2 and self.stop_event.wait(1 + attempt):
+                                raise Cancelled()
+                    if downloaded:
+                        break
+                if not downloaded:
+                    raise _RedownloadRejected("指定媒體重新下載失敗；原檔與完成紀錄均已保留。")
+            except Cancelled:
+                self.result.stopped = True
+                if row:
+                    self.store.record_redownload(key, self.options.redownload_mode, "stopped", prior=row)
+                break
+            except _RedownloadRejected as error:
+                message = str(error)
+                self.result.errors.append(message)
+                self.result.failed += 1
+                if row:
+                    self.store.record_redownload(key, self.options.redownload_mode, "failed", error=message, prior=row,
+                                                recovery_path=error.recovery_path)
+                self.log(message)
+            except Exception:
+                message = "指定媒體重新下載失敗；原檔與完成紀錄均已保留。"
+                self.result.errors.append(message)
+                self.result.failed += 1
+                if row:
+                    self.store.record_redownload(key, self.options.redownload_mode, "failed", error=message, prior=row)
+                self.log(message)
+        self.result.job_state = "stopped" if self.result.stopped else "partial" if self.result.failed else "completed"
         return self.result
 
     def _collect(self, url: str, source_name: str, *, search: bool = False, source_key: str | None = None,

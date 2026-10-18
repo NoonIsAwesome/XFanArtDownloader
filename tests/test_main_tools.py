@@ -100,6 +100,56 @@ class MainToolsTests(unittest.TestCase):
             self.window._retry_history_items({'one': 'not a selection'})
         start.assert_not_called()
 
+    def test_selected_redownload_uses_history_scope_and_preserves_the_current_form(self):
+        self.window.hashtag_input.clear()
+        self.window.authors_input.setPlainText('@unrelated')
+        self.window.tweet_urls_input.setPlainText('https://x.com/unrelated/status/999')
+        for mode in ('copy', 'overwrite'):
+            with self.subTest(mode=mode), patch.object(self.window, '_start_download_options') as start:
+                self.window._redownload_history_items(['one', 'one', 'two'], mode)
+                options = start.call_args.args[0]
+                self.assertEqual(options.redownload_media_ids, ('one', 'two'))
+                self.assertEqual(options.redownload_mode, mode)
+                self.assertEqual(options.retry_media_ids, ())
+                self.assertEqual(options.hashtags, ())
+                self.assertFalse(options.search_enabled)
+                self.assertFalse(options.discover_authors)
+                self.assertFalse(options.retry_failed)
+                self.assertFalse(options.resume)
+                self.assertEqual(options.authors, ())
+                self.assertEqual(options.tweet_urls, ())
+        self.assertEqual(self.window.authors_input.toPlainText(), '@unrelated')
+        self.assertEqual(self.window.tweet_urls_input.toPlainText(), 'https://x.com/unrelated/status/999')
+
+    def test_redownload_rejects_unknown_mode_invalid_selection_and_active_work(self):
+        with patch.object(self.window, '_start_download_options') as start:
+            for identifiers, mode in ((['one'], 'replace-anything'), ([], 'copy'),
+                                      ({'one': True}, 'copy'), ([''], 'copy'), ([1], 'copy'), (['one'], [])):
+                self.window._redownload_history_items(identifiers, mode)
+            self.window.is_downloading = True
+            self.window._redownload_history_items(['one'], 'copy')
+            self.window.is_downloading = False
+        start.assert_not_called()
+
+    def test_redownload_summary_names_saved_destinations_instead_of_the_search_form(self):
+        self.window.hashtag_input.clear()
+        self.window.is_downloading = True
+        self.window._active_redownload_count = 2
+        self.window._active_redownload_mode = 'copy'
+        self.window._refresh_summary()
+        self.assertIn('重新下載', self.window.tag_summary_label.text())
+        self.assertIn('2', self.window.source_summary_label.text())
+        self.assertIn('另存副本', self.window.source_summary_label.text())
+        self.assertEqual(self.window.path_label.text(), '使用各項目原儲存資料夾')
+        self.window.is_downloading = False
+
+    def test_history_redownload_signal_starts_the_selected_controller_action(self):
+        self.window.show_download_history()
+        with patch.object(self.window, '_start_download_options') as start:
+            self.window._history_dialog.redownloadRequested.emit(['one'], 'copy')
+        self.assertEqual(start.call_args.args[0].redownload_media_ids, ('one',))
+        self.assertEqual(start.call_args.args[0].redownload_mode, 'copy')
+
     def test_unfinished_sources_cannot_look_like_full_success(self):
         result = SimpleNamespace(stopped=False, downloaded=1, skipped=0, failed=0, posts=1,
             filtered=0, errors=[], resumed=True, incomplete_sources=[{'state': 'queued'}])

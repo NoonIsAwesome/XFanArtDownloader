@@ -80,6 +80,13 @@ TOOLS_HELP = (
     "「清除本機登入資料」需再次確認，只移除本工具的 Cookie 與專用瀏覽器資料，保留下載與紀錄。"
     "「檢查 App 與擷取工具更新」只查詢官方版本資訊，不會自動下載或安裝。"
 )
+# 明確區分失敗重試與已完成項目的主動重抓，並在操作前說明原檔保護。
+# Distinguish failed retries from intentional redownloads and explain original-file protection.
+REDOWNLOAD_HELP = (
+    "在下載紀錄選取已完成項目，按「重新下載選取項目」。預設另存副本，在原資料夾建立不重複的新檔名。\n"
+    "覆寫原檔需再次確認；新檔完整下載並驗證成功後才替換，失敗或停止時保留原檔。"
+    "只處理選取項目，不會重新搜尋其他貼文。原檔已遺失或損壞時，請重新掃描來源貼文補抓。"
+)
 CONNECTION_HELP = (
     "X 載入或下載較慢時，可選用 WARP 本機代理；一般連線正常時不需要開啟。\n"
     "若只想讓本工具的下載經 WARP，請先自行安裝官方 WARP，於 Preferences → Advanced → "
@@ -216,6 +223,7 @@ class UsageGuideDialog(QDialog):
         for title, text, name in (
             ("分段搜尋與接續工作", RESUME_HELP, "Resume"),
             ("紀錄、登入資料與更新", TOOLS_HELP, "Tools"),
+            ("重新下載已完成項目", REDOWNLOAD_HELP, "Redownload"),
         ):
             section = QVBoxLayout()
             section.setSpacing(6)

@@ -9,13 +9,14 @@ import re
 from PyQt6.QtCore import QDateTime, QItemSelectionModel, QObject, QRunnable, QThreadPool, QTimer, Qt, QUrl, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QDesktopServices, QIcon
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
+    QLineEdit, QPushButton, QScrollArea, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 import storage
 from i18n import tr, translate_text, locale as ui_locale
 from resources_rc import get_icon_path
+from redownload_dialog import choose_redownload_mode
 from ui_theme import apply_dialog_theme, theme_colors
 
 
@@ -52,6 +53,16 @@ def _cell(value):
     item = QTableWidgetItem(text)
     item.setToolTip(_tip(text))
     return item
+
+
+def _scroll_page(content):
+    # 小視窗或長翻譯可捲動整個分頁，不讓表格與說明強迫視窗長高或互相重疊。
+    # Scroll tab contents on short windows instead of expanding or overlapping child controls.
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.Shape.NoFrame)
+    scroll.setWidget(content)
+    return scroll
 
 
 def _date(value):
@@ -92,6 +103,7 @@ class _HistoryQuery(QRunnable):
 
 class HistoryDialog(QDialog):
     retryRequested = pyqtSignal(object)
+    redownloadRequested = pyqtSignal(object, str)
 
     def __init__(self, parent=None, db_path=None, theme="light"):
         super().__init__(parent)
@@ -150,10 +162,11 @@ class HistoryDialog(QDialog):
         filters.addWidget(self.refresh_button)
         body.addLayout(filters)
         self.history_table = _table(4)
+        self.history_table.setMinimumHeight(140)
         self.history_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         body.addWidget(self.history_table, 1)
         self.detail_label = _label(muted=True)
-        self.detail_label.setMaximumHeight(64)
+        self.detail_label.setMaximumHeight(88)
         body.addWidget(self.detail_label)
         actions = QHBoxLayout()
         self.file_button, self.folder_button, self.post_button = (QPushButton() for _ in range(3))
@@ -169,7 +182,7 @@ class HistoryDialog(QDialog):
         pager.addStretch(1)
         pager.addWidget(self.page_label)
         body.addLayout(pager)
-        self.tabs.addTab(history, "")
+        self.tabs.addTab(_scroll_page(history), "")
 
         # 工作頁顯示實際來源狀態，不把搜尋跑完等同於已收齊 X 的所有作品。
         # Show recorded source states without equating completed searches with exhaustive X coverage.
@@ -180,6 +193,7 @@ class HistoryDialog(QDialog):
         self.jobs_hint = _label(muted=True)
         progress_layout.addWidget(self.jobs_hint)
         self.jobs_table = _table(4)
+        self.jobs_table.setMinimumHeight(110)
         self.jobs_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.jobs_table.setMaximumHeight(190)
         self.jobs_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -187,19 +201,24 @@ class HistoryDialog(QDialog):
         self.source_hint = _label(muted=True)
         progress_layout.addWidget(self.source_hint)
         self.sources_table = _table(5)
+        self.sources_table.setMinimumHeight(140)
         self.sources_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.sources_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.sources_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         progress_layout.addWidget(self.sources_table, 1)
-        self.tabs.addTab(progress, "")
+        self.tabs.addTab(_scroll_page(progress), "")
         self.message_label = _label(muted=True)
         layout.addWidget(self.message_label)
-        footer = QHBoxLayout()
-        self.retry_button, self.close_button = QPushButton(), QPushButton()
+        # 長翻譯不擠壓三個並排按鈕；左側動作分列，關閉固定在右下角。
+        # Stack the two longer actions and keep Close at the right in every language.
+        footer = QGridLayout()
+        footer.setVerticalSpacing(8)
+        self.retry_button, self.redownload_button, self.close_button = QPushButton(), QPushButton(), QPushButton()
         self.retry_button.setProperty("variant", "primary")
-        footer.addWidget(self.retry_button)
-        footer.addStretch(1)
-        footer.addWidget(self.close_button)
+        footer.addWidget(self.retry_button, 0, 0)
+        footer.addWidget(self.redownload_button, 1, 0)
+        footer.setColumnStretch(1, 1)
+        footer.addWidget(self.close_button, 1, 2)
         layout.addLayout(footer)
         for button in self.findChildren(QPushButton):
             button.setAutoDefault(False)
@@ -213,6 +232,7 @@ class HistoryDialog(QDialog):
         self.jobs_table.itemSelectionChanged.connect(self._job_selected)
         self.tabs.currentChanged.connect(self.refresh)
         self.retry_button.clicked.connect(self._retry_selected)
+        self.redownload_button.clicked.connect(self._redownload_selected)
         self.file_button.clicked.connect(lambda:self._open_local("file"))
         self.folder_button.clicked.connect(lambda:self._open_local("folder"))
         self.post_button.clicked.connect(self._open_post)
@@ -350,7 +370,9 @@ class HistoryDialog(QDialog):
         selected = self._selected_media()
         single = selected[0] if len(selected) == 1 else None
         self.retry_button.setVisible(self.tabs.currentIndex() == 0)
+        self.redownload_button.setVisible(self.tabs.currentIndex() == 0)
         self.retry_button.setEnabled(self._retry_allowed and not self._loading and any(row["state"] == "failed" for row in selected))
+        self.redownload_button.setEnabled(self._retry_allowed and not self._loading and any(row["state"] == "downloaded" for row in selected))
         self.file_button.setEnabled(bool(single and single.get("safe_file_path")))
         self.folder_button.setEnabled(bool(single and single.get("safe_folder_path")))
         self.post_button.setEnabled(bool(single and re.fullmatch(r"[0-9]{1,30}", str(single["post_id"]))))
@@ -363,10 +385,22 @@ class HistoryDialog(QDialog):
                 detail += "\n" + tr("檔案已不存在或不在原儲存目錄內。")
             if single.get("error"):
                 detail += "\n" + translate_text(str(single["error"]))
+            # 副本結果只是獨立事件；原紀錄與開啟按鈕仍指向原檔，避免偷偷改變下載路徑。
+            # A copy is a separate event; keep the canonical record and Open actions on the original.
+            event = single.get("latest_redownload")
+            if isinstance(event, dict):
+                mode = tr("另存副本") if event.get("mode") == "copy" else tr("覆寫原檔")
+                detail += "\n" + tr("最近重新下載：{mode} · {state}", mode=mode, state=self._state(event.get("state")))
+                if event.get("mode") == "copy" and event.get("state") == "downloaded" and event.get("path"):
+                    detail += "\n" + tr("副本：{filename}", filename=Path(str(event["path"])).name)
+                if event.get("recovery_path"):
+                    detail += "\n" + tr("原檔備份：{filename}", filename=Path(str(event["recovery_path"])).name)
+                if event.get("error"):
+                    detail += "\n" + translate_text(str(event["error"]))
             self.detail_label.setText(detail[:800])
             self.detail_label.setToolTip(_tip(detail))
         else:
-            self.detail_label.setText(tr("選取一筆紀錄可查看檔案；可多選失敗項目重試。"))
+            self.detail_label.setText(tr("選取已完成項目可重新下載；失敗項目可重試。"))
             self.detail_label.setToolTip("")
         self.message_label.setText(translate_text(self._last_error) if self._last_error else tr("正在讀取紀錄…") if self._loading else tr("沒有符合條件的紀錄。") if self.tabs.currentIndex() == 0 and not self._rows else tr("尚無收集工作。") if self.tabs.currentIndex() == 1 and not self._jobs else "")
 
@@ -379,6 +413,20 @@ class HistoryDialog(QDialog):
             identifiers = list(dict.fromkeys(row["media_key"] for row in self._selected_media() if row["state"] == "failed"))
             if identifiers:
                 self.retryRequested.emit(identifiers)
+
+    def _redownload_selected(self):
+        # 先固定目前選取的已完成項目，再讓使用者選擇另存或覆寫；視窗本身不改紀錄。
+        # Snapshot selected completed IDs before choosing copy/replace; this view never edits records.
+        if not self._retry_allowed or self._loading or self.tabs.currentIndex() != 0:
+            return
+        identifiers = list(dict.fromkeys(row["media_key"] for row in self._selected_media() if row["state"] == "downloaded"))
+        if not identifiers:
+            return
+        mode = choose_redownload_mode(len(identifiers), parent=self, theme=self.theme_mode)
+        # 巢狀確認期間主視窗仍可能結束背景工作，因此再次檢查可執行狀態。
+        # Recheck the busy gate after the nested choice dialog before starting a worker.
+        if mode in {"copy", "overwrite"} and self._retry_allowed and not self._loading and not self._hidden:
+            self.redownloadRequested.emit(identifiers, mode)
 
     def _open_local(self, kind):
         # 列表中的路徑只是快照，點按時必須重新查驗檔案與原目錄邊界。
@@ -419,8 +467,9 @@ class HistoryDialog(QDialog):
             self.status_combo.setItemText(index, tr(text))
         self.search_input.setPlaceholderText(tr("作者帳號或檔名"))
         self.search_input.setAccessibleName(tr("搜尋作者帳號或檔名"))
-        for button, source in ((self.refresh_button,"重新整理"),(self.file_button,"開啟檔案"),(self.folder_button,"開啟資料夾"),(self.post_button,"開啟來源貼文"),(self.previous_button,"上一頁"),(self.next_button,"下一頁"),(self.retry_button,"重試選取的失敗項目"),(self.close_button,"關閉")):
+        for button, source in ((self.refresh_button,"重新整理"),(self.file_button,"開啟檔案"),(self.folder_button,"開啟資料夾"),(self.post_button,"開啟來源貼文"),(self.previous_button,"上一頁"),(self.next_button,"下一頁"),(self.retry_button,"重試選取的失敗項目"),(self.redownload_button,"重新下載選取項目"),(self.close_button,"關閉")):
             button.setText(tr(source))
+        self.redownload_button.setToolTip(tr("只處理選取的已完成項目；失敗項目請使用重試。"))
         self.history_table.setHorizontalHeaderLabels([tr(value) for value in ("狀態","作者","檔名","更新時間")])
         self.jobs_table.setHorizontalHeaderLabels([tr(value) for value in ("狀態","目標標籤","來源完成進度","更新時間")])
         self.sources_table.setHorizontalHeaderLabels([tr(value) for value in ("類型","來源","狀態","進度","訊息")])

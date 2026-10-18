@@ -390,6 +390,16 @@ def refresh_gallery_summary(window):
     # 摘要只讀取目前選項並產生說明，實際任務設定仍由 main.snapshot_options 驗證。
     # The summary describes current inputs; main.snapshot_options still validates the actual job.
     """Update summaries without raising while the user is editing a tag."""
+    if window.is_downloading and getattr(window, "_active_redownload_count", 0):
+        # 歷史重新下載沿用每個項目的原儲存位置，避免摘要誤示目前表單的目錄。
+        # History redownloads use each saved destination, not the current form's directory.
+        window.tag_summary_label.setText(tr("重新下載選取項目"))
+        window.tag_summary_label.setToolTip(window.tag_summary_label.text())
+        mode = tr("覆寫原檔") if window._active_redownload_mode == "overwrite" else tr("另存副本")
+        window.source_summary_label.setText(tr("重新下載 {count} 個媒體 · {mode}", count=window._active_redownload_count, mode=mode))
+        window.path_label.setText(tr("使用各項目原儲存資料夾"))
+        window.path_label.setToolTip(window.path_label.text())
+        return
     if window.is_downloading and getattr(window, "_active_retry_count", 0):
         window.tag_summary_label.setText(tr("選取媒體重試"))
         window.tag_summary_label.setToolTip(window.tag_summary_label.text())
